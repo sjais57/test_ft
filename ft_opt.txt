@@ -1,0 +1,92 @@
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+
+# Download NLTK resources
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
+
+# Initialize lemmatizer and stopwords
+lemmatizer = WordNetLemmatizer()
+stop_words = set(stopwords.words('english'))
+
+def preprocess_text(text):
+    # Tokenize
+    tokens = word_tokenize(text.lower())
+    # Remove stopwords and non-alphabetic tokens
+    tokens = [lemmatizer.lemmatize(token) for token in tokens if token.isalpha() and token not in stop_words]
+    return " ".join(tokens)
+
+# Example usage
+with open("your_text_file.txt", "r") as file:
+    text_data = file.read()
+
+preprocessed_text = preprocess_text(text_data)
+
+
+#Prepare Dataset:
+from datasets import Dataset
+
+# Split text into chunks (e.g., sentences or paragraphs)
+text_chunks = preprocessed_text.split("\n")  # Adjust based on your data
+
+# Create a dataset
+dataset = Dataset.from_dict({"text": text_chunks})
+
+
+#Load OPT and tokenizer:
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+model_name = "facebook/opt-125m"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name)
+
+#Tokenize dataset:
+def tokenize_function(examples):
+    return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=512)
+
+tokenized_dataset = dataset.map(tokenize_function, batched=True)
+
+
+
+#Apply peft:
+from peft import get_peft_model, LoraConfig, TaskType
+
+# Define LoRA configuration
+peft_config = LoraConfig(
+    task_type=TaskType.CAUSAL_LM,  # Task type for causal language modeling
+    inference_mode=False,
+    r=8,  # Rank of the low-rank matrices
+    lora_alpha=32,  # Scaling factor
+    lora_dropout=0.1,  # Dropout rate
+)
+
+# Apply PEFT to the model
+peft_model = get_peft_model(model, peft_config)
+
+
+#Fine training:
+from transformers import Trainer, TrainingArguments
+
+# Define training arguments
+training_args = TrainingArguments(
+    output_dir="./opt-125m-finetuned",
+    per_device_train_batch_size=4,
+    num_train_epochs=3,
+    logging_dir="./logs",
+    logging_steps=10,
+    save_steps=500,
+    save_total_limit=2,
+)
+
+# Initialize Trainer
+trainer = Trainer(
+    model=peft_model,
+    args=training_args,
+    train_dataset=tokenized_dataset,
+)
+
+# Fine-tune the model
+trainer.train()
