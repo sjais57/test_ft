@@ -90,3 +90,27 @@ trainer = Trainer(
 
 # Fine-tune the model
 trainer.train()
+
+
+#Save:
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel, PeftConfig
+
+# Step 1: Load the base model and tokenizer
+base_model_name = "original_model_name_or_path"
+base_model = AutoModelForCausalLM.from_pretrained(base_model_name)
+tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+
+# Step 2: Load the fine-tuned adapter
+peft_model_id = "path/to/save/adapter"
+model = PeftModel.from_pretrained(base_model, peft_model_id)
+
+# Step 3: Merge the adapter with the base model (optional)
+merged_model = model.merge_and_unload()
+merged_model.save_pretrained("path/to/save/merged_model")
+tokenizer.save_pretrained("path/to/save/merged_model")
+
+# Step 4: Use the merged model with vLLM
+from vllm import LLM
+
+llm = LLM(model="path/to/save/merged_model")
