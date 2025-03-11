@@ -162,6 +162,32 @@ merged_model = model.merge_and_unload()
 merged_model.save_pretrained("path/to/save/merged_model")
 tokenizer.save_pretrained("path/to/save/merged_model")
 
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# Load the base model and tokenizer
+base_model = AutoModelForCausalLM.from_pretrained("base_model_name_or_path")
+tokenizer = AutoTokenizer.from_pretrained("path/to/fine_tuned_tokenizer")
+
+# Resize the base model's embedding layer to match the tokenizer's vocabulary size
+base_model.resize_token_embeddings(len(tokenizer))
+
+
+from peft import get_peft_model, LoraConfig
+
+# Define the PEFT configuration
+peft_config = LoraConfig(
+    r=8,  # Rank of the low-rank matrices
+    lora_alpha=32,  # Scaling factor (alpha_pattern)
+    target_modules=["q_proj", "v_proj"],  # Target modules for LoRA
+    lora_dropout=0.1,  # Dropout rate
+    bias="none",  # Bias handling
+    task_type="CAUSAL_LM",  # Task type
+)
+
+# Apply PEFT to the base model
+peft_model = get_peft_model(base_model, peft_config)
 
 
 ---------------------
