@@ -121,16 +121,77 @@ from vllm import LLM
 
 llm = LLM(model="path/to/save/merged_model")
 
+===========================
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
 
 # Load the base model
 base_model_name = "base_model_name_or_path"
 base_model = AutoModelForCausalLM.from_pretrained(base_model_name)
 
-# Resize the embedding layer to match the fine-tuned model's vocabulary size
-new_vocab_size = 50265  # Replace with the fine-tuned model's vocab size
-base_model.resize_token_embeddings(new_vocab_size)
+# Load the fine-tuned tokenizer
+tokenizer = AutoTokenizer.from_pretrained("path/to/save/tokenizer")  # Fine-tuned tokenizer
+print(f"Tokenizer vocab size: {len(tokenizer)}")  # Should be 50272
+
+# Resize the base model's embedding layer to match the new tokenizer size
+base_model.resize_token_embeddings(len(tokenizer))
 
 # Load the fine-tuned adapter
 peft_model_id = "path/to/save/adapter"
 model = PeftModel.from_pretrained(base_model, peft_model_id)
+
+
+# Check the model's embedding layer size
+embedding_size = model.base_model.model.get_input_embeddings().weight.shape[0]
+print(f"Model embedding size: {embedding_size}")  # Should be 50272
+
+
+
+# Save the resized base model with the adapter
+model.save_pretrained("path/to/save/resized_model")
+tokenizer.save_pretrained("path/to/save/resized_model")
+
+
+
+
+# Merge the adapter with the base model
+merged_model = model.merge_and_unload()
+
+# Save the merged model
+merged_model.save_pretrained("path/to/save/merged_model")
+tokenizer.save_pretrained("path/to/save/merged_model")
+
+
+
+---------------------
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
+
+# Step 1: Load the base model
+base_model_name = "base_model_name_or_path"
+base_model = AutoModelForCausalLM.from_pretrained(base_model_name)
+
+# Step 2: Load the fine-tuned tokenizer
+tokenizer = AutoTokenizer.from_pretrained("path/to/save/tokenizer")
+print(f"Tokenizer vocab size: {len(tokenizer)}")  # Should be 50272
+
+# Step 3: Resize the base model's embedding layer
+base_model.resize_token_embeddings(len(tokenizer))
+
+# Step 4: Load the fine-tuned adapter
+peft_model_id = "path/to/save/adapter"
+model = PeftModel.from_pretrained(base_model, peft_model_id)
+
+# Step 5: Save the resized model and tokenizer
+model.save_pretrained("path/to/save/resized_model")
+tokenizer.save_pretrained("path/to/save/resized_model")
+
+# Step 6: Merge the adapter (optional)
+merged_model = model.merge_and_unload()
+merged_model.save_pretrained("path/to/save/merged_model")
+tokenizer.save_pretrained("path/to/save/merged_model")
+
+# Step 7: Use with vLLM
+from vllm import LLM
+llm = LLM(model="path/to/save/merged_model")
