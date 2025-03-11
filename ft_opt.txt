@@ -91,7 +91,13 @@ trainer = Trainer(
 # Fine-tune the model
 trainer.train()
 
+from peft import PeftModel
 
+# Assuming `model` is your fine-tuned PeftModel
+# and `original_model` is the base model (e.g., from transformers)
+
+# Save the adapter weights and config
+model.save_pretrained("path/to/save/adapter")
 #Save:
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel, PeftConfig
