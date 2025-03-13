@@ -26,9 +26,9 @@ def create_qa_dataset(text, output_file):
     qa_pairs = []
     for chunk in chunks:
         if chunk.strip():
-            # Example: Generate a question and answer (you can customize this)
-            question = f"What is the main idea of this section: '{chunk[:50]}...'?"
-            answer = "This section discusses..."  # Replace with actual answer extraction logic
+            # Example: Manually or programmatically generate questions and answers
+            question = "What is the main idea of this section?"
+            answer = chunk.split(". ")[0]  # Use the first sentence as the answer (for example)
             qa_pairs.append({
                 "context": chunk,
                 "question": question,
@@ -45,8 +45,6 @@ output_file = "qa_dataset.jsonl"
 create_qa_dataset(text, output_file)
 print("Created QA dataset in JSONL format.")
 
-
-
 ###3: Fine-Tune CodeLlama-7B for Question Answering
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, DataCollatorForLanguageModeling
@@ -55,22 +53,32 @@ from datasets import load_dataset
 # Load the tokenizer and model
 model_name = "codellama/CodeLlama-7b-hf"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+# Set a pad_token if it doesn't exist
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token  # Use EOS token as PAD token
+
 model = AutoModelForCausalLM.from_pretrained(model_name)
 
-# Load the QA dataset
-dataset = load_dataset('json', data_files={'train': 'qa_dataset.jsonl'})
 
+##Tokenize the dataset with padding:
 # Tokenize the dataset
 def tokenize_function(examples):
     # Combine context, question, and answer into a single input
     inputs = [f"Context: {c}\nQuestion: {q}\nAnswer: {a}" for c, q, a in zip(examples['context'], examples['question'], examples['answer'])]
     return tokenizer(inputs, padding="max_length", truncation=True, max_length=512, return_tensors="pt")
 
+# Load the QA dataset
+dataset = load_dataset('json', data_files={'train': 'qa_dataset.jsonl'})
+
+# Tokenize the dataset
 tokenized_datasets = dataset.map(tokenize_function, batched=True)
 
 # Add labels for causal language modeling
 tokenized_datasets = tokenized_datasets.map(lambda x: {"labels": x["input_ids"]}, batched=True)
 
+
+##: Update the Data Collator
 # Data collator for causal language modeling
 data_collator = DataCollatorForLanguageModeling(
     tokenizer=tokenizer,
@@ -81,7 +89,7 @@ data_collator = DataCollatorForLanguageModeling(
 training_args = TrainingArguments(
     output_dir="./results",
     overwrite_output_dir=True,
-    num_train_epochs=1,
+    num_train_epochs=3,  # Increase the number of epochs
     per_device_train_batch_size=1,
     save_steps=10_000,
     save_total_limit=2,
@@ -103,6 +111,7 @@ trainer = Trainer(
 print("Starting fine-tuning...")
 trainer.train()
 print("Fine-tuning complete.")
+
 
 
 ##4: Save the Fine-Tuned Model
