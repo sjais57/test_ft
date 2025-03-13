@@ -46,12 +46,18 @@ def create_qa_dataset(text, output_file):
     # Create a list of QA pairs
     qa_pairs = []
     for chunk in chunks:
-        if chunk.strip():
+        if chunk.strip():  # Skip empty chunks
             # Example: Generate a question and answer
             question = f"What is the main idea of this section: '{chunk[:50]}...'?"
             answer = chunk.split(". ")[0]  # Use the first sentence as the answer
+            
+            # Remove any extra newlines in the context, question, and answer
+            context = chunk.replace("\n", " ").strip()
+            question = question.replace("\n", " ").strip()
+            answer = answer.replace("\n", " ").strip()
+            
             qa_pairs.append({
-                "context": chunk,
+                "context": context,
                 "question": question,
                 "answer": answer
             })
@@ -63,9 +69,17 @@ def create_qa_dataset(text, output_file):
 
 # Example usage
 output_file = "qa_dataset.jsonl"
-create_qa_dataset(processed_text, output_file)
+create_qa_dataset(text, output_file)
 print("Created QA dataset in JSONL format.")
 
+#verify dataset:
+# Inspect the first few lines of the dataset
+with open("qa_dataset.jsonl", "r") as f:
+    for i, line in enumerate(f):
+        if i < 5:  # Print the first 5 lines
+            print(json.loads(line))
+        else:
+            break
 
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, DataCollatorForLanguageModeling
