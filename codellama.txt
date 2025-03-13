@@ -1,0 +1,125 @@
+#Extract pdf
+import PyPDF2
+
+def extract_text_from_pdf(pdf_path):
+    text = ""
+    with open(pdf_path, "rb") as file:
+        reader = PyPDF2.PdfReader(file)
+        for page in reader.pages:
+            text += page.extract_text()
+    return text
+
+# Example usage
+pdf_path = "your_pdf_file.pdf"
+text = extract_text_from_pdf(pdf_path)
+print("Extracted text from PDF.")
+
+
+###2: Preprocess the Text into a Question-Answering Dataset
+import json
+
+def create_qa_dataset(text, output_file):
+    # Split the text into chunks (e.g., paragraphs or sections)
+    chunks = text.split("\n\n")  # Adjust the splitting logic as needed
+    
+    # Create a list of QA pairs
+    qa_pairs = []
+    for chunk in chunks:
+        if chunk.strip():
+            # Example: Generate a question and answer (you can customize this)
+            question = f"What is the main idea of this section: '{chunk[:50]}...'?"
+            answer = "This section discusses..."  # Replace with actual answer extraction logic
+            qa_pairs.append({
+                "context": chunk,
+                "question": question,
+                "answer": answer
+            })
+    
+    # Write to a JSONL file
+    with open(output_file, "w") as f:
+        for item in qa_pairs:
+            f.write(json.dumps(item) + "\n")
+
+# Example usage
+output_file = "qa_dataset.jsonl"
+create_qa_dataset(text, output_file)
+print("Created QA dataset in JSONL format.")
+
+
+
+###3: Fine-Tune CodeLlama-7B for Question Answering
+
+from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments
+from datasets import load_dataset
+
+# Load the tokenizer and model
+model_name = "codellama/CodeLlama-7b-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name)
+
+# Load the QA dataset
+dataset = load_dataset('json', data_files={'train': 'qa_dataset.jsonl'})
+
+# Tokenize the dataset
+def tokenize_function(examples):
+    # Combine context, question, and answer into a single input
+    inputs = [f"Context: {c}\nQuestion: {q}\nAnswer: {a}" for c, q, a in zip(examples['context'], examples['question'], examples['answer'])]
+    return tokenizer(inputs, padding="max_length", truncation=True, max_length=512)
+
+tokenized_datasets = dataset.map(tokenize_function, batched=True)
+
+# Define training arguments
+training_args = TrainingArguments(
+    output_dir="./results",
+    overwrite_output_dir=True,
+    num_train_epochs=1,
+    per_device_train_batch_size=1,
+    save_steps=10_000,
+    save_total_limit=2,
+    logging_dir="./logs",
+    logging_steps=200,
+    do_train=True,
+    no_cuda=True,  # Force CPU usage
+)
+
+# Initialize the Trainer
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_datasets['train'],
+)
+
+# Fine-tune the model
+print("Starting fine-tuning...")
+trainer.train()
+print("Fine-tuning complete.")
+
+
+
+##4: Save the Fine-Tuned Model
+
+trainer.save_model("./fine_tuned_model")
+tokenizer.save_pretrained("./fine_tuned_model")
+print("Model saved to './fine_tuned_model'.")
+
+##Create chatbot:
+  from transformers import pipeline
+
+# Load the fine-tuned model
+qa_pipeline = pipeline("text-generation", model="./fine_tuned_model", tokenizer=tokenizer)
+
+
+  
+# Chatbot function
+def chatbot():
+    print("Chatbot is ready! Type 'exit' to stop.")
+    while True:
+        user_input = input("You: ")
+        if user_input.lower() == "exit":
+            break
+        # Generate a response
+        response = qa_pipeline(f"Question: {user_input}\nAnswer:")[0]['generated_text']
+        print(f"Bot: {response}")
+
+# Run the chatbot
+chatbot()
