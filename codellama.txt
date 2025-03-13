@@ -49,7 +49,7 @@ print("Created QA dataset in JSONL format.")
 
 ###3: Fine-Tune CodeLlama-7B for Question Answering
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments
+from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, DataCollatorForLanguageModeling
 from datasets import load_dataset
 
 # Load the tokenizer and model
@@ -64,9 +64,18 @@ dataset = load_dataset('json', data_files={'train': 'qa_dataset.jsonl'})
 def tokenize_function(examples):
     # Combine context, question, and answer into a single input
     inputs = [f"Context: {c}\nQuestion: {q}\nAnswer: {a}" for c, q, a in zip(examples['context'], examples['question'], examples['answer'])]
-    return tokenizer(inputs, padding="max_length", truncation=True, max_length=512)
+    return tokenizer(inputs, padding="max_length", truncation=True, max_length=512, return_tensors="pt")
 
 tokenized_datasets = dataset.map(tokenize_function, batched=True)
+
+# Add labels for causal language modeling
+tokenized_datasets = tokenized_datasets.map(lambda x: {"labels": x["input_ids"]}, batched=True)
+
+# Data collator for causal language modeling
+data_collator = DataCollatorForLanguageModeling(
+    tokenizer=tokenizer,
+    mlm=False,  # Set to False for causal language modeling
+)
 
 # Define training arguments
 training_args = TrainingArguments(
@@ -87,13 +96,13 @@ trainer = Trainer(
     model=model,
     args=training_args,
     train_dataset=tokenized_datasets['train'],
+    data_collator=data_collator,
 )
 
 # Fine-tune the model
 print("Starting fine-tuning...")
 trainer.train()
 print("Fine-tuning complete.")
-
 
 
 ##4: Save the Fine-Tuned Model
