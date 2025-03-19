@@ -1,0 +1,67 @@
+import redis
+import torch
+from vllm import LLM, SamplingParams
+from redis.commands.search.field import TextField
+from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+from redis.commands.search.query import Query
+
+# Redis Configuration
+REDIS_HOST = "localhost"
+REDIS_PORT = 6379
+REDIS_INDEX_NAME = "rag_index"
+
+# Initialize Redis Client
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+
+def create_redis_index():
+    """Create Redis full-text search index if not exists."""
+    try:
+        redis_client.ft(REDIS_INDEX_NAME).info()
+    except:
+        schema = (
+            TextField("text")
+        )
+        redis_client.ft(REDIS_INDEX_NAME).create_index(schema, definition=IndexDefinition(prefix=["doc:"], index_type=IndexType.HASH))
+
+def insert_document(doc_id, text):
+    """Insert a document into Redis."""
+    redis_client.hset(f"doc:{doc_id}", mapping={"text": text})
+
+def search_similar_docs(query, top_k=5):
+    """Retrieve top-k relevant documents using full-text search."""
+    q = Query(f"@text:{query}").paging(0, top_k).return_fields("text")
+    results = redis_client.ft(REDIS_INDEX_NAME).search(q)
+    return [doc["text"] for doc in results.docs]
+
+# Load vLLM with CodeLlama-7B-HF
+llm = LLM("codellama/CodeLlama-7b-hf")
+
+def generate_response(prompt):
+    """Generate response using vLLM."""
+    sampling_params = SamplingParams(temperature=0.7, top_p=0.9, max_tokens=200)
+    output = llm.generate(prompt, sampling_params)[0].text
+    return output
+
+def main():
+    create_redis_index()
+    
+    # Example document insertion
+    insert_document("1", "Redis is a powerful in-memory database.")
+    insert_document("2", "vLLM is optimized for serving large language models.")
+    
+    query = "Tell me about Redis."
+    relevant_docs = search_similar_docs(query)
+    
+    context = "\n".join(relevant_docs)
+    prompt = f"Context: {context}\nUser: {query}\nAI:"  
+    response = generate_response(prompt)
+    print(response)
+
+if __name__ == "__main__":
+    main()
+
+
+=========================================================
+    ============================================
+
+            
