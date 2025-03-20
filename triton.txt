@@ -1,0 +1,67 @@
+import numpy as np
+import triton_python_backend_utils as pb_utils
+from vllm import LLM, SamplingParams
+
+class TritonPythonModel:
+    def initialize(self, args):
+        """Load the vLLM model on CPU."""
+        self.model = LLM("facebook/opt-1.3b", tensor_parallel_size=1, enforce_eager=True)  # Change to your model
+
+    def execute(self, requests):
+        """Handle inference requests."""
+        responses = []
+        for request in requests:
+            input_text = pb_utils.get_input_tensor_by_name(request, "input_text").as_numpy()[0].decode("utf-8")
+            
+            sampling_params = SamplingParams(max_tokens=100, temperature=0.7, top_p=0.9)
+            output = self.model.generate([input_text], sampling_params)
+            output_text = output[0].outputs[0].text.encode("utf-8")
+
+            # Create Triton output tensor
+            output_tensor = pb_utils.Tensor("output_text", np.array([output_text], dtype=np.object_))
+            responses.append(pb_utils.InferenceResponse(output_tensors=[output_tensor]))
+
+        return responses
+
+
+config.pbtxt
+name: "vllm_cpu"
+backend: "python"
+max_batch_size: 1
+input [
+  {
+    name: "input_text"
+    data_type: TYPE_STRING
+    dims: [ -1 ]
+  }
+]
+output [
+  {
+    name: "output_text"
+    data_type: TYPE_STRING
+    dims: [ -1 ]
+  }
+]
+instance_group [
+  {
+    count: 1
+    kind: KIND_CPU
+  }
+]
+
+
+
+import tritonclient.http as httpclient
+import numpy as np
+
+client = httpclient.InferenceServerClient(url="localhost:8000")
+
+input_text = np.array(["What is the capital of France?"], dtype=np.object_)
+input_tensor = httpclient.InferInput("input_text", input_text.shape, "BYTES")
+input_tensor.set_data_from_numpy(input_text)
+
+response = client.infer(model_name="vllm_cpu", inputs=[input_tensor])
+output_text = response.as_numpy("output_text")[0].decode("utf-8")
+
+print("Generated Response:", output_text)
+
