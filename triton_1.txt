@@ -1,0 +1,61 @@
+wget https://github.com/triton-inference-server/server/releases/download/v2.31.0/tritonserver2.31.0-jetpack5.1.tgz
+tar -xzf tritonserver2.31.0-jetpack5.1.tgz
+
+Add triton to your PATH:
+export PATH=$(pwd)/tritonserver/bin:$PATH
+
+Step 2: Create a Triton Model Repository
+mkdir -p triton_model_repository/codellama-7b-instruct/1
+
+
+Copy the model files into the repository:
+
+#Create a config.pbtxt file for the model
+name: "codellama-7b-instruct"
+platform: "vllm"
+max_batch_size: 8
+input [
+  {
+    name: "prompt"
+    data_type: TYPE_STRING
+    dims: [ -1 ]
+  }
+]
+output [
+  {
+    name: "output"
+    data_type: TYPE_STRING
+    dims: [ -1 ]
+  }
+]
+
+
+Step 3: Start Triton Inference Server
+tritonserver --model-repository=$(pwd)/triton_model_repository
+
+
+Install Triton Client
+pip install tritonclient[http]
+
+Send a Request
+import tritonclient.http as httpclient
+import numpy as np
+
+# Initialize the client
+client = httpclient.InferenceServerClient(url="localhost:8000")
+
+# Prepare the input
+inputs = [httpclient.InferInput("prompt", [1], "BYTES")]
+inputs[0].set_data_from_numpy(np.array(["Write a Python function to calculate the factorial of a number."], dtype=object))
+
+# Send the request
+outputs = [httpclient.InferRequestedOutput("output")]
+response = client.infer(model_name="codellama-7b-instruct", inputs=inputs, outputs=outputs)
+
+# Get the output
+result = response.as_numpy("output")
+print(result)
+
+6. Optimize for CPU
+export OMP_NUM_THREADS=160
+
