@@ -1,5 +1,4 @@
 wget https://github.com/triton-inference-server/server/releases/download/v2.31.0/tritonserver2.31.0-jetpack5.1.tgz
-tar -xzf tritonserver2.31.0-jetpack5.1.tgz
 
 Add triton to your PATH:
 export PATH=$(pwd)/tritonserver/bin:$PATH
@@ -58,4 +57,50 @@ print(result)
 
 6. Optimize for CPU
 export OMP_NUM_THREADS=160
+
+
+=+===============================
+Alternative:
+6. Alternative: Build Triton from Source
+If the prebuilt binaries are not compatible with your system, you can build Triton Inference Server from source.
+
+Step 1: Install Build Dependencies
+Install required packages:
+
+
+sudo yum install -y git cmake gcc-c++ make python3-devel
+Install Python dependencies:
+
+
+pip install numpy pybind11
+Step 2: Build Triton
+Clone the Triton Inference Server repository:
+
+
+git clone https://github.com/triton-inference-server/server.git
+cd server
+Build Triton:
+
+
+mkdir build && cd build
+cmake -DTRITON_ENABLE_GPU=OFF ..
+make -j$(nproc)
+Install Triton:
+
+
+make install
+Add Triton to your PATH:
+
+
+export PATH=$(pwd)/install/bin:$PATH
+7. Test Triton
+Start the Triton server:
+
+
+tritonserver --model-repository=$(pwd)/triton_model_repository
+Verify the server is running:
+
+Check the logs for any errors.
+
+Send a test request using the Triton HTTP or gRPC API.
 
