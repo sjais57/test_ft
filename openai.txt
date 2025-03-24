@@ -1,0 +1,44 @@
+import openai
+
+openai.api_base = "http://localhost:8000/v1"  # vLLM's default OpenAI-compatible endpoint
+openai.api_key = "EMPTY"
+
+response = openai.ChatCompletion.create(
+    model="opt-125m",  # Change to "codellama-7b-instruct-hf" for the other model
+    messages=[{"role": "system", "content": "You are a helpful assistant."},
+              {"role": "user", "content": "What is AI?"}]
+)
+
+print(response)
+
+import asyncio
+
+async def get_response(model_name, prompt):
+    response = openai.ChatCompletion.create(
+        model=model_name,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response
+
+async def main():
+    models = ["opt-125m", "codellama-7b-instruct-hf"]
+    tasks = [get_response(model, "Explain machine learning.") for model in models]
+    responses = await asyncio.gather(*tasks)
+    for model, res in zip(models, responses):
+        print(f"Model: {model}, Response: {res}")
+
+asyncio.run(main())
+
+
+
+import openai
+
+openai.api_base = "http://localhost:8000/v1"
+openai.api_key = "EMPTY"
+
+response = openai.ChatCompletion.create(
+    model="opt-125m",
+    messages=[{"role": "user", "content": "Explain AI"}]
+)
+
+print(response)
