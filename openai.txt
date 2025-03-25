@@ -71,6 +71,41 @@ print("Question:", question)
 print("Answer:", response.choices[0].text.strip())
 
 
+
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="token-abc123")
+
+questions = [
+    "What is the capital of France?",
+    "Explain quantum computing in simple terms.",
+    "Who wrote 'To Kill a Mockingbird'?",
+    "How does photosynthesis work?"
+]
+
+for question in questions:
+    response = client.completions.create(
+        model="facebook/opt-1.3b",
+        prompt=f"Question: {question}\nAnswer:",
+        max_tokens=100,
+        temperature=0.3
+    )
+    print(f"Q: {question}")
+    print(f"A: {response.choices[0].text.strip()}\n")
+
+
+try:
+    response = client.completions.create(
+        model="facebook/opt-1.3b",
+        prompt=prompt,
+        max_tokens=100
+    )
+except Exception as e:
+    print(f"Error processing question: {question}")
+    print(f"Error: {str(e)}")
+    continue
+==================================
+
 Chat completion:
 response = client.chat.completions.create(
     model="facebook/opt-1.3b",
@@ -83,3 +118,37 @@ response = client.chat.completions.create(
 )
 
 print("Answer:", response.choices[0].message.content)
+
+
+
+=========================
+Conversation:
+conversation = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Who invented the telephone?"},
+    {"role": "assistant", "content": "Alexander Graham Bell is credited with inventing the telephone."},
+    {"role": "user", "content": "What year was it invented?"}
+]
+
+response = client.chat.completions.create(
+    model="facebook/opt-1.3b",
+    messages=conversation,
+    max_tokens=50
+)
+
+print(response.choices[0].message.content)
+
+============================
+Batch processing high through put:
+batch_prompts = [f"Question: {q}\nAnswer:" for q in questions]
+
+responses = client.completions.create(
+    model="facebook/opt-1.3b",
+    prompt=batch_prompts,
+    max_tokens=100,
+    temperature=0.3
+)
+
+for q, resp in zip(questions, responses.choices):
+    print(f"Q: {q}")
+    print(f"A: {resp.text.strip()}\n")
