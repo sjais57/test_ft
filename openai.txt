@@ -42,3 +42,44 @@ response = openai.ChatCompletion.create(
 )
 
 print(response)
+
+
+======================================
+
+from openai import OpenAI
+
+# Point the client to your local vLLM server
+client = OpenAI(
+    base_url="http://localhost:8000/v1",  # vLLM's OpenAI-compatible API endpoint
+    api_key="token-abc123"  # API key is required but can be arbitrary for vLLM
+)
+
+# Define your question
+question = "Explain the concept of gravitational waves in simple terms."
+
+# Generate a response
+response = client.completions.create(
+    model="facebook/opt-1.3b",  # The model you're using
+    prompt=f"Question: {question}\nAnswer:",
+    max_tokens=150,
+    temperature=0.7,
+    stop=["\n\n"]  # Stop generation at double newlines
+)
+
+# Print the answer
+print("Question:", question)
+print("Answer:", response.choices[0].text.strip())
+
+
+Chat completion:
+response = client.chat.completions.create(
+    model="facebook/opt-1.3b",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": question}
+    ],
+    max_tokens=150,
+    temperature=0.7
+)
+
+print("Answer:", response.choices[0].message.content)
