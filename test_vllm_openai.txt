@@ -1,0 +1,81 @@
+# 1. First install required packages
+!pip install vllm openai requests
+
+# 2. Start vLLM server in a background process
+import subprocess
+import time
+import requests
+
+MODEL = "facebook/opt-125m"  # Small CPU-friendly model
+PORT = 8000
+
+# Start the server
+server_process = subprocess.Popen(
+    f"vllm serve {MODEL} --device cpu --port {PORT}",
+    shell=True,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True
+)
+
+# Check if server is ready
+def is_server_ready():
+    try:
+        response = requests.get(f"http://localhost:{PORT}/v1/models", timeout=2)
+        return response.status_code == 200
+    except:
+        return False
+
+print("Waiting for server to start...")
+for _ in range(30):  # 30 second timeout
+    if is_server_ready():
+        print("Server ready!")
+        break
+    time.sleep(1)
+else:
+    server_process.terminate()
+    raise RuntimeError("Failed to start vLLM server")
+
+# 3. Test the OpenAI-compatible endpoint
+import openai
+
+client = openai.OpenAI(
+    base_url=f"http://localhost:{PORT}/v1",
+    api_key="no-key-needed"
+)
+
+# Test completion
+prompt = "Explain machine learning in simple terms:"
+response = client.completions.create(
+    model=MODEL,
+    prompt=prompt,
+    max_tokens=100,
+    temperature=0.7
+)
+
+print("Prompt:", prompt)
+print("Response:", response.choices[0].text)
+
+# 4. Test chat-style completion
+conversation = [
+    {"role": "user", "content": "What is AI?"},
+    {"role": "assistant", "content": "AI stands for Artificial Intelligence."},
+    {"role": "user", "content": "How is it different from ML?"}
+]
+
+# Format as text prompt
+prompt_text = "\n".join([f"{m['role']}: {m['content']}" for m in conversation])
+prompt_text += "\nassistant:"
+
+response = client.completions.create(
+    model=MODEL,
+    prompt=prompt_text,
+    max_tokens=100,
+    temperature=0.7,
+    stop=["user:"]
+)
+
+print("\nChat response:", response.choices[0].text)
+
+# 5. Cleanup when done
+server_process.terminate()
