@@ -9,7 +9,119 @@ response = openai.ChatCompletion.create(
               {"role": "user", "content": "What is AI?"}]
 )
 
-print(response)
+print(response)import streamlit as st
+import time
+import openai
+from vllm import AsyncEngineArgs, AsyncLLMEngine
+from vllm.entrypoints.openai import api_server
+import subprocess
+import requests
+
+# Configuration
+MODEL = "facebook/opt-125m"  # Small CPU-friendly model
+PORT = 8000
+
+# --- vLLM Server Management ---
+def start_vllm_server():
+    """Start vLLM server in a subprocess"""
+    cmd = f"vllm serve {MODEL} --device cpu --port {PORT}"
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    return process
+
+def is_server_ready():
+    """Check if server is ready to accept requests"""
+    try:
+        return requests.get(f"http://localhost:{PORT}/v1/models", timeout=2).status_code == 200
+    except:
+        return False
+
+# --- Streamlit App ---
+def main():
+    st.title("vLLM Chat Interface")
+    st.caption(f"Model: {MODEL} | Running on CPU")
+
+    # Initialize server
+    if 'server' not in st.session_state:
+        st.session_state.server = start_vllm_server()
+        with st.spinner(f"Starting vLLM server (this may take a few minutes)..."):
+            for _ in range(120):  # 2 minute timeout
+                if is_server_ready():
+                    st.session_state.client = openai.OpenAI(
+                        base_url=f"http://localhost:{PORT}/v1",
+                        api_key="no-key-needed"
+                    )
+                    break
+                time.sleep(1)
+            else:
+                st.error("Failed to start vLLM server")
+                st.session_state.server.terminate()
+                st.stop()
+
+    # Initialize chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Sidebar controls
+    with st.sidebar:
+        st.subheader("Parameters")
+        temperature = st.slider("Temperature", 0.1, 1.0, 0.7)
+        max_tokens = st.slider("Max Tokens", 10, 200, 100)
+
+    # Chat input
+    if prompt := st.chat_input("Type your message"):
+        # Add user message to history
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        
+        # Display assistant response
+        with st.chat_message("assistant"):
+            response_placeholder = st.empty()
+            full_response = ""
+            
+            try:
+                # Format conversation history
+                prompt_text = "\n".join(
+                    f"{m['role']}: {m['content']}" 
+                    for m in st.session_state.messages
+                )
+                prompt_text += "\nassistant:"
+                
+                # Get completion
+                response = st.session_state.client.completions.create(
+                    model=MODEL,
+                    prompt=prompt_text,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stop=["user:"]
+                )
+                
+                full_response = response.choices[0].text.strip()
+                response_placeholder.markdown(full_response)
+                
+            except Exception as e:
+                full_response = f"Error: {str(e)}"
+                response_placeholder.error(full_response)
+            
+        # Add assistant response to history
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+# Run the app
+if __name__ == "__main__":
+    main()
 
 import asyncio
 
