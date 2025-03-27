@@ -152,3 +152,31 @@ responses = client.completions.create(
 for q, resp in zip(questions, responses.choices):
     print(f"Q: {q}")
     print(f"A: {resp.text.strip()}\n")
+
+
+
+import streamlit as st
+import openai
+
+# Set OpenAI-compatible endpoint
+OPENAI_API_URL = "http://localhost:8000/v1"
+
+# Function to interact with vLLM API
+def get_vllm_response(prompt):
+    response = openai.ChatCompletion.create(
+        model="codellama-7b-instruct-hf",  # Adjust based on the model you run
+        messages=[{"role": "user", "content": prompt}],
+        api_base=OPENAI_API_URL,
+    )
+    return response["choices"][0]["message"]["content"]
+
+# Streamlit UI
+st.title("Chat with vLLM")
+
+user_input = st.text_area("Enter your message:")
+if st.button("Generate Response"):
+    if user_input:
+        response = get_vllm_response(user_input)
+        st.write(response)
+    else:
+        st.warning("Please enter a message.")
