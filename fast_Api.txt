@@ -144,3 +144,150 @@ if __name__ == "__main__":
     
     # Cleanup when Streamlit is done
     server_process.terminate()
+
+
+
+
+
+
+
+
+
+
+=============================================
+
+import streamlit as st
+import subprocess
+import time
+import requests
+import openai
+import sys
+import os
+from threading import Thread
+
+# Configuration
+MODEL_NAME = "facebook/opt-125m"  # Small CPU-friendly model
+PORT = 8000
+
+# --- vLLM Server Management ---
+def start_vllm_server():
+    cmd = f"vllm serve {MODEL_NAME} --device cpu --port {PORT}"
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    
+    # Log server output in background
+    def log_output(pipe, prefix):
+        for line in pipe:
+            print(f"[{prefix}] {line}", end='')
+    
+    Thread(target=log_output, args=(process.stdout, "stdout"), daemon=True).start()
+    Thread(target=log_output, args=(process.stderr, "stderr"), daemon=True).start()
+    
+    return process
+
+def is_server_ready():
+    try:
+        response = requests.get(f"http://localhost:{PORT}/v1/models", timeout=2)
+        return response.status_code == 200
+    except:
+        return False
+
+# --- Streamlit UI ---
+def chat_interface():
+    st.title("vLLM Chat (CPU Mode)")
+    st.caption(f"Model: {MODEL_NAME} | Running on CPU")
+    
+    # Initialize client
+    client = openai.OpenAI(
+        base_url=f"http://localhost:{PORT}/v1",
+        api_key="no-key-needed"
+    )
+    
+    # Session state for messages
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    
+    # Display messages
+    for msg in st.session_state.messages:
+        st.chat_message(msg["role"]).write(msg["content"])
+    
+    # Sidebar controls
+    with st.sidebar:
+        st.subheader("Generation Parameters")
+        temperature = st.slider("Temperature", 0.1, 1.0, 0.7)
+        max_tokens = st.slider("Max Tokens", 10, 200, 100)
+    
+    # Chat input
+    if prompt := st.chat_input("Your message"):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.chat_message("user").write(prompt)
+        
+        with st.chat_message("assistant"):
+            response_placeholder = st.empty()
+            full_response = ""
+            
+            try:
+                # Format conversation history
+                conversation = "\n".join(
+                    f"{m['role']}: {m['content']}" 
+                    for m in st.session_state.messages
+                )
+                prompt_text = f"{conversation}\nassistant:"
+                
+                # Get completion
+                response = client.completions.create(
+                    model=MODEL_NAME,
+                    prompt=prompt_text,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stop=["user:"],
+                    stream=True
+                )
+                
+                # Stream response
+                for chunk in response:
+                    full_response += chunk.choices[0].text
+                    response_placeholder.markdown(full_response + "▌")
+                
+                response_placeholder.markdown(full_response)
+                
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+                full_response = "Sorry, I encountered an error"
+                response_placeholder.markdown(full_response)
+        
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    # Start server
+    st.info("Starting vLLM server...")
+    server_process = start_vllm_server()
+    
+    # Wait for server
+    with st.spinner("Waiting for server to start..."):
+        for _ in range(30):  # 30 second timeout
+            if is_server_ready():
+                break
+            time.sleep(1)
+        else:
+            st.error("Failed to start vLLM server")
+            server_process.terminate()
+            st.stop()
+    
+    # Run chat interface
+    st.success("Server ready!")
+    chat_interface()
+    
+    # Cleanup on exit
+    def cleanup():
+        server_process.terminate()
+        server_process.wait()
+    
+    import atexit
+    atexit.register(cleanup)
