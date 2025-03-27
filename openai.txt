@@ -155,28 +155,120 @@ for q, resp in zip(questions, responses.choices):
 
 
 
+======================================================
+
 import streamlit as st
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+from vllm.entrypoints.openai import api_server
+import threading
 import openai
+import uvicorn
 
-# Set OpenAI-compatible endpoint
-OPENAI_API_URL = "http://localhost:8000/v1"
+# Configuration
+MODEL_NAME = "facebook/opt-125m"  # Small model suitable for CPU
+API_PORT = 8000
 
-# Function to interact with vLLM API
-def get_vllm_response(prompt):
-    response = openai.ChatCompletion.create(
-        model="codellama-7b-instruct-hf",  # Adjust based on the model you run
-        messages=[{"role": "user", "content": prompt}],
-        api_base=OPENAI_API_URL,
+# --- vLLM Server Setup ---
+def run_server():
+    app = FastAPI()
+
+    # Configure CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
-    return response["choices"][0]["message"]["content"]
 
-# Streamlit UI
-st.title("Chat with vLLM")
+    # Initialize the engine with CPU compatibility
+    engine_args = AsyncEngineArgs(
+        model=MODEL_NAME,
+        tensor_parallel_size=1,
+        gpu_memory_utilization=0.9,
+        device="cpu",  # Force CPU usage
+        dtype="float32",  # Use float32 for CPU compatibility
+    )
 
-user_input = st.text_area("Enter your message:")
-if st.button("Generate Response"):
-    if user_input:
-        response = get_vllm_response(user_input)
-        st.write(response)
-    else:
-        st.warning("Please enter a message.")
+    engine = AsyncLLMEngine.from_engine_args(engine_args)
+    app = api_server.create_app(engine=engine)
+
+    # Run without uvicorn (using uvicorn.run internally)
+    config = uvicorn.Config(
+        app,
+        host="0.0.0.0",
+        port=API_PORT,
+        log_level="info",
+        workers=1,
+    )
+    server = uvicorn.Server(config)
+    server.run()
+
+# --- Streamlit Interface ---
+def streamlit_interface():
+    # Configure OpenAI client to point to our vLLM server
+    openai.api_base = f"http://localhost:{API_PORT}/v1"
+    openai.api_key = "no-key-needed"
+
+    st.title("vLLM Chat Interface (CPU)")
+    st.write(f"Using model: {MODEL_NAME}")
+
+    # Initialize chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Accept user input
+    if prompt := st.chat_input("What would you like to ask?"):
+        # Add user message to chat history
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        
+        # Display assistant response
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            full_response = ""
+            
+            # Call vLLM server with streaming
+            try:
+                for response in openai.ChatCompletion.create(
+                    model=MODEL_NAME,
+                    messages=[{"role": m["role"], "content": m["content"]} 
+                            for m in st.session_state.messages],
+                    stream=True,
+                    temperature=0.7,
+                ):
+                    full_response += response.choices[0].delta.get("content", "")
+                    message_placeholder.markdown(full_response + "▌")
+                
+                message_placeholder.markdown(full_response)
+            except Exception as e:
+                st.error(f"Error calling the model: {str(e)}")
+                full_response = "Sorry, I encountered an error."
+                message_placeholder.markdown(full_response)
+        
+        # Add assistant response to chat history
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    # Start the server in a separate thread
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+    
+    # Give the server a moment to start
+    import time
+    time.sleep(2)
+    
+    # Run the Streamlit interface
+    streamlit_interface()
