@@ -179,7 +179,8 @@ def test_completion(prompt, max_tokens=50, temperature=0.7):
 test_completion("Explain machine learning in simple terms:")
 test_completion("Translate to French: 'Good morning, how are you?'")
 
-# 4. Test chat-style completion
+import time
+
 def test_chat(conversation, max_tokens=100, temperature=0.7):
     try:
         # Format conversation history
@@ -196,5 +197,15 @@ def test_chat(conversation, max_tokens=100, temperature=0.7):
         )
         
         elapsed = time.time() - start_time
-        display(Markdown(f"""
-**Conversation History:**  
+        
+        # Create the Markdown content properly
+        md_content = (
+            "**Conversation History:**\n\n"
+            + prompt_text
+            + f"\n\n**Response Time:** {elapsed:.2f} seconds"
+        )
+        
+        return response, md_content
+    
+    except Exception as e:
+        return None, f"Error: {str(e)}"
