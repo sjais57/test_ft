@@ -98,13 +98,3 @@ if prompt := st.chat_input("Type your message..."):
                 st.session_state.messages.append({"role": "assistant", "content": response})
             except Exception as e:
                 st.error(f"Error: {str(e)}")
-
-
-
-
-
-Tune parameters to improve model performance.
-
-Ensure Fairness & Robustness
-
-Check if the model is biased or sensitive to small input changes.
