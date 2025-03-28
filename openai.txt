@@ -100,24 +100,8 @@ if prompt := st.chat_input("Type your message..."):
                 st.error(f"Error: {str(e)}")
 
 
-Goals of Model Evaluation
-Assess Model Performance
 
-Measure how well the model predicts outcomes using metrics like accuracy, precision, recall, F1-score, etc.
 
-Check for Overfitting & Underfitting
-
-Determine if the model is too complex (overfitting) or too simple (underfitting).
-
-Compare Different Models
-
-Evaluate multiple models to select the best-performing one.
-
-Validate Model Generalization
-
-Ensure the model performs well on new, unseen data (test set).
-
-Optimize Hyperparameters
 
 Tune parameters to improve model performance.
 
