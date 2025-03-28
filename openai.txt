@@ -3,42 +3,44 @@ import openai
 import subprocess
 import time
 import requests
+import sys
 
 # Configuration
-MODEL1 = "facebook/opt-125m"  # First model to compare
-MODEL2 = "facebook/opt-350m"  # Second model to compare
-PORT1 = 8001  # Port for first model
-PORT2 = 8002  # Port for second model
+MODEL = "facebook/opt-125m"  # Small CPU-friendly model
+PORT = 8001
 
 # --- Core Functions ---
-def start_servers():
-    """Start both vLLM server processes"""
-    cmd1 = f"vllm serve {MODEL1} --device cpu --port {PORT1}"
-    cmd2 = f"vllm serve {MODEL2} --device cpu --port {PORT2}"
-    
-    process1 = subprocess.Popen(cmd1, shell=True)
-    process2 = subprocess.Popen(cmd2, shell=True)
-    return process1, process2
+def start_server():
+    """Start vLLM server process"""
+    cmd = f"vllm serve {MODEL} --device cpu --port {PORT}"
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    return process
 
-def check_server(port):
-    """Check if server is responsive"""
+def check_server_ready():
+    """Check if server is ready"""
     try:
-        return requests.get(f"http://localhost:{port}/v1/models", timeout=2).status_code == 200
+        return requests.get(f"http://localhost:{PORT}/v1/models", timeout=2).status_code == 200
     except:
         return False
 
-def init_client(port):
-    """Initialize OpenAI client for specific port"""
+def init_client():
+    """Initialize OpenAI client"""
     return openai.OpenAI(
-        base_url=f"http://localhost:{port}/v1",
+        base_url=f"http://localhost:{PORT}/v1",
         api_key="no-key-needed"
     )
 
-def get_response(client, model, messages, max_tokens=100, temperature=0.7):
+def get_response(client, messages, max_tokens=100, temperature=0.7):
     """Get chat completion from vLLM"""
     prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages) + "\nassistant:"
     response = client.completions.create(
-        model=model,
+        model=MODEL,
         prompt=prompt,
         max_tokens=max_tokens,
         temperature=temperature,
@@ -47,107 +49,52 @@ def get_response(client, model, messages, max_tokens=100, temperature=0.7):
     return response.choices[0].text.strip()
 
 # --- Streamlit App ---
-st.title("vLLM Model Comparison Tool")
-st.caption(f"Comparing {MODEL1} vs {MODEL2}")
+st.title("vLLM Chat Interface")
+st.caption(f"Model: {MODEL} | Port: {PORT}")
 
 # Initialize session state
-if 'servers' not in st.session_state:
-    st.session_state.servers = [None, None]
-    st.session_state.clients = [None, None]
+if 'messages' not in st.session_state:
     st.session_state.messages = []
-    st.session_state.responses = {}
 
-# Server Control Buttons
-if st.button("🚀 Start Both Servers"):
-    if None in st.session_state.servers:
-        with st.spinner(f"Starting both servers (may take 2-3 minutes)..."):
-            st.session_state.servers = start_servers()
-            
-            # Wait for both servers to start
-            start_time = time.time()
-            while time.time() - start_time < 180:  # 3 minute timeout
-                ready1 = check_server(PORT1)
-                ready2 = check_server(PORT2)
-                
-                if ready1 and st.session_state.clients[0] is None:
-                    st.session_state.clients[0] = init_client(PORT1)
-                
-                if ready2 and st.session_state.clients[1] is None:
-                    st.session_state.clients[1] = init_client(PORT2)
-                
-                if all(st.session_state.clients):
-                    st.success("Both servers ready!")
-                    break
-                
-                time.sleep(1)
-            else:
-                st.error("Some servers failed to start")
+# Automatically start server and initialize client
+if 'client' not in st.session_state:
+    with st.spinner("🔃 Starting vLLM server (this may take a minute)..."):
+        server_process = start_server()
+        
+        # Wait for server to start (max 2 minutes)
+        start_time = time.time()
+        while (time.time() - start_time) < 120:
+            if check_server_ready():
+                st.session_state.client = init_client()
+                st.success("✅ Server is ready! You can start chatting.")
+                break
+            time.sleep(1)
+        else:
+            st.error("❌ Server failed to start within 2 minutes")
+            server_process.terminate()
+            st.stop()
 
-if st.button("🛑 Stop All Servers"):
-    for i, server in enumerate(st.session_state.servers):
-        if server:
-            server.terminate()
-            st.session_state.servers[i] = None
-            st.session_state.clients[i] = None
-    st.session_state.messages = []
-    st.session_state.responses = {}
-    st.success("All servers stopped")
-
-# Chat Parameters
-with st.expander("⚙️ Settings"):
-    max_tokens = st.slider("Max response length", 10, 200, 100)
-    temperature = st.slider("Creativity", 0.1, 1.0, 0.7)
-
-# Display Chat History
+# Display chat history
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
-# Chat Input
+# Chat input
 if prompt := st.chat_input("Type your message..."):
-    if not all(st.session_state.clients):
-        st.error("Please start both servers first")
-        st.stop()
-    
     # Add user message
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.chat_message("user").write(prompt)
     
-    # Get responses from both models
-    with st.spinner("Getting responses from both models..."):
-        try:
-            st.session_state.responses = {
-                MODEL1: get_response(
-                    st.session_state.clients[0],
-                    MODEL1,
+    # Get and display response
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            try:
+                response = get_response(
+                    st.session_state.client,
                     st.session_state.messages,
-                    max_tokens,
-                    temperature
-                ),
-                MODEL2: get_response(
-                    st.session_state.clients[1],
-                    MODEL2,
-                    st.session_state.messages,
-                    max_tokens,
-                    temperature
+                    max_tokens=100,
+                    temperature=0.7
                 )
-            }
-            
-            # Display responses side by side
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader(MODEL1)
-                st.write(st.session_state.responses[MODEL1])
-                st.session_state.messages.append({"role": "assistant", "content": f"{MODEL1}: {st.session_state.responses[MODEL1]}"})
-            
-            with col2:
-                st.subheader(MODEL2)
-                st.write(st.session_state.responses[MODEL2])
-                st.session_state.messages.append({"role": "assistant", "content": f"{MODEL2}: {st.session_state.responses[MODEL2]}"})
-            
-            # Add comparison analysis
-            st.divider()
-            st.subheader("Comparison Analysis")
-            st.write(f"Response length difference: {abs(len(st.session_state.responses[MODEL1]) - len(st.session_state.responses[MODEL2]))} characters")
-            
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
+                st.write(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
