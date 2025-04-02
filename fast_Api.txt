@@ -1,3 +1,33 @@
+from fastapi import FastAPI
+from pydantic import BaseModel
+from vllm import LLM, SamplingParams
+
+# Initialize FastAPI app
+app = FastAPI()
+
+# Load the model using vLLM
+llm = LLM(model="facebook/opt-125m")
+
+# Define request schema
+class GenerateRequest(BaseModel):
+    prompt: str
+    max_tokens: int = 100
+
+# Define response route
+@app.post("/generate")
+async def generate_text(request: GenerateRequest):
+    sampling_params = SamplingParams(max_tokens=request.max_tokens)
+    output = llm.generate(request.prompt, sampling_params)
+    return {"response": output[0].outputs[0].text}
+
+# Health check route
+@app.get("/")
+async def root():
+    return {"message": "vLLM FastAPI server is running"}
+
+
+bbbbbbbb
+
 import streamlit as st
 import subprocess
 import threading
