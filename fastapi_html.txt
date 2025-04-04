@@ -1,0 +1,148 @@
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+from vllm.sampling_params import SamplingParams
+from vllm.utils import random_uuid
+from pydantic import BaseModel
+import uvicorn
+import time
+from typing import List, Optional
+
+app = FastAPI()
+
+# Mount static files and templates
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+# Initialize the engine with CPU-specific settings
+engine_args = AsyncEngineArgs(
+    model="facebook/opt-125m",
+    tensor_parallel_size=1,
+    device="cpu",
+    gpu_memory_utilization=0,
+    enforce_eager=True,
+    max_model_len=512,
+)
+
+engine = AsyncLLMEngine.from_engine_args(engine_args)
+
+# Data models
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+    max_tokens: int = 50
+
+# API endpoint
+@app.post("/api/chat")
+async def chat_completion(request: ChatRequest):
+    prompt = "\n".join([f"{msg.role}: {msg.content}" for msg in request.messages])
+    prompt += "\nassistant:"
+    
+    sampling_params = SamplingParams(
+        temperature=0.7,
+        top_p=1.0,
+        max_tokens=request.max_tokens,
+    )
+    
+    request_id = random_uuid()
+    results_generator = engine.generate(prompt, sampling_params, request_id)
+    
+    final_output = None
+    async for request_output in results_generator:
+        final_output = request_output
+    
+    if final_output is None:
+        return {"error": "No output generated"}
+    
+    return {
+        "response": final_output.outputs[0].text,
+        "time_taken": time.time() - start_time
+    }
+
+# Web interface
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.post("/ask", response_class=HTMLResponse)
+async def ask_question(
+    request: Request,
+    question: str = Form(...),
+    max_tokens: int = Form(50)
+):
+    start_time = time.time()
+    
+    # Prepare the request
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": question}
+    ]
+    
+    # Call our own API endpoint
+    api_request = ChatRequest(messages=messages, max_tokens=max_tokens)
+    response = await chat_completion(api_request)
+    
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "question": question,
+        "answer": response["response"],
+        "time_taken": f"{response['time_taken']:.2f}",
+        "max_tokens": max_tokens
+    })
+
+if __name__ == "__main__":
+    # Create required directories
+    import os
+    os.makedirs("static", exist_ok=True)
+    os.makedirs("templates", exist_ok=True)
+    
+    # Create default template if not exists
+    if not os.path.exists("templates/index.html"):
+        with open("templates/index.html", "w") as f:
+            f.write("""<!DOCTYPE html>
+<html>
+<head>
+    <title>OPT-125M Chat</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .chat-box { border: 1px solid #ddd; padding: 20px; border-radius: 5px; margin-bottom: 20px; }
+        .question { font-weight: bold; color: #333; }
+        .answer { margin-top: 10px; padding: 10px; background-color: #f5f5f5; border-radius: 5px; }
+        form { display: flex; flex-direction: column; gap: 10px; }
+        textarea { width: 100%; padding: 10px; }
+        button { padding: 10px 15px; background-color: #4CAF50; color: white; border: none; cursor: pointer; }
+        .stats { font-size: 0.8em; color: #666; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>OPT-125M Chat (CPU)</h1>
+    
+    <div class="chat-box">
+        <form method="post" action="/ask">
+            <label for="question">Your question:</label>
+            <textarea id="question" name="question" rows="4" required>{{ question if question else '' }}</textarea>
+            
+            <label for="max_tokens">Max tokens (default 50):</label>
+            <input type="number" id="max_tokens" name="max_tokens" value="{{ max_tokens if max_tokens else 50 }}">
+            
+            <button type="submit">Ask</button>
+        </form>
+        
+        {% if answer %}
+        <div class="result">
+            <div class="question">Q: {{ question }}</div>
+            <div class="answer">A: {{ answer }}</div>
+            <div class="stats">Generated in {{ time_taken }} seconds (max tokens: {{ max_tokens }})</div>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>""")
+    
+    uvicorn.run(app, host="0.0.0.0", port=8000)
