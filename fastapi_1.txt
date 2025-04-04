@@ -1,0 +1,343 @@
+import streamlit as st
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+from vllm.sampling_params import SamplingParams
+from vllm.utils import random_uuid
+from pydantic import BaseModel
+import uvicorn
+import time
+from typing import List, Optional
+from threading import Thread
+from openai import OpenAI
+import os
+
+# --- FastAPI Server Setup ---
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# vLLM Engine Configuration (CPU)
+engine_args = AsyncEngineArgs(
+    model="facebook/opt-125m",
+    device="cpu",
+    enforce_eager=True,
+    max_model_len=512
+)
+
+engine = AsyncLLMEngine.from_engine_args(engine_args)
+
+# Request Model
+class ChatRequest(BaseModel):
+    messages: List[dict]
+    max_tokens: int = 50
+    temperature: float = 0.7
+
+# OpenAI-Compatible Endpoint
+@app.post("/v1/chat/completions")
+async def chat_completion(request: ChatRequest):
+    prompt = "\n".join([f"{m['role']}: {m['content']}" for m in request.messages])
+    prompt += "\nassistant:"
+    
+    sampling_params = SamplingParams(
+        temperature=request.temperature,
+        max_tokens=request.max_tokens
+    )
+    
+    request_id = random_uuid()
+    output = await engine.generate(prompt, sampling_params, request_id)
+    
+    return {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": list(output)[0].outputs[0].text
+            }
+        }]
+    }
+
+def run_fastapi():
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+# --- Streamlit Frontend ---
+def streamlit_ui():
+    st.set_page_config(
+        page_title="OPT-125M Chat (All-in-One)",
+        page_icon="🤖"
+    )
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = [
+            {"role": "assistant", "content": "Hello! Ask me anything."}
+        ]
+
+    # Display chat history
+    for msg in st.session_state.messages:
+        st.chat_message(msg["role"]).write(msg["content"])
+
+    # Sidebar controls
+    with st.sidebar:
+        st.title("Parameters")
+        max_tokens = st.slider("Max tokens", 10, 200, 50)
+        temperature = st.slider("Temperature", 0.1, 1.0, 0.7)
+        st.info("Running on CPU - responses may be slow")
+
+    # Chat input
+    if prompt := st.chat_input("Type your message..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.chat_message("user").write(prompt)
+
+        with st.chat_message("assistant"):
+            client = OpenAI(base_url="http://localhost:8000/v1", api_key="no-key")
+            try:
+                response = client.chat.completions.create(
+                    model="facebook/opt-125m",
+                    messages=st.session_state.messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                reply = response.choices[0].message.content
+                st.write(reply)
+                st.session_state.messages.append({"role": "assistant", "content": reply})
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+
+# --- Run Both Servers ---
+if __name__ == "__main__":
+    # Start FastAPI in a separate thread
+    Thread(target=run_fastapi, daemon=True).start()
+    
+    # Give FastAPI a second to start
+    time.sleep(1)
+    
+    # Run Streamlit
+    streamlit_ui()
+
+
+    ==============================================================
+
+   1. FastAPI Server (vllm_server.py)
+    vllm_server.py
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+from vllm.sampling_params import SamplingParams
+from vllm.utils import random_uuid
+from pydantic import BaseModel
+import uvicorn
+import time
+from typing import List, Optional
+
+app = FastAPI()
+
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Model configuration for CPU
+engine_args = AsyncEngineArgs(
+    model="facebook/opt-125m",
+    device="cpu",
+    tensor_parallel_size=1,
+    gpu_memory_utilization=0,
+    enforce_eager=True,
+    max_model_len=512,
+)
+
+engine = AsyncLLMEngine.from_engine_args(engine_args)
+
+# Request models
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatCompletionRequest(BaseModel):
+    model: str = "facebook/opt-125m"
+    messages: List[ChatMessage]
+    temperature: Optional[float] = 0.7
+    top_p: Optional[float] = 1.0
+    max_tokens: Optional[int] = 50
+    stream: Optional[bool] = False
+
+# OpenAI-compatible endpoint
+@app.post("/v1/chat/completions")
+async def chat_completion(request: ChatCompletionRequest):
+    start_time = time.time()
+    
+    # Format prompt
+    prompt = "\n".join([f"{msg.role}: {msg.content}" for msg in request.messages])
+    prompt += "\nassistant:"
+    
+    sampling_params = SamplingParams(
+        temperature=request.temperature,
+        top_p=request.top_p,
+        max_tokens=request.max_tokens,
+    )
+    
+    request_id = random_uuid()
+    results_generator = engine.generate(prompt, sampling_params, request_id)
+    
+    final_output = None
+    async for request_output in results_generator:
+        final_output = request_output
+    
+    if final_output is None:
+        return {"error": "No output generated"}
+    
+    return {
+        "id": request_id,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": request.model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": final_output.outputs[0].text,
+            },
+            "finish_reason": "stop",
+        }],
+        "usage": {
+            "prompt_tokens": len(final_output.prompt_token_ids),
+            "completion_tokens": len(final_output.outputs[0].token_ids),
+            "total_tokens": len(final_output.prompt_token_ids) + len(final_output.outputs[0].token_ids),
+        },
+        "processing_time": time.time() - start_time
+    }
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+
+2. Streamlit Frontend (streamlit_app.py)
+
+import streamlit as st
+from openai import OpenAI
+import time
+
+# Configure OpenAI client to point to our FastAPI server
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="no-key-required"
+)
+
+# App configuration
+st.set_page_config(
+    page_title="OPT-125M Chat",
+    page_icon="🤖",
+    layout="centered"
+)
+
+# Initialize chat history
+if "messages" not in st.session_state:
+    st.session_state.messages = [{
+        "role": "assistant",
+        "content": "Hello! I'm an OPT-125M model running on CPU. How can I help you?"
+    }]
+
+# Sidebar for parameters
+with st.sidebar:
+    st.title("Parameters")
+    max_tokens = st.slider("Max tokens", 10, 200, 50)
+    temperature = st.slider("Temperature", 0.1, 1.0, 0.7)
+    st.caption("Note: Running on CPU may be slow for larger responses")
+
+# Display chat messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Chat input
+if prompt := st.chat_input("Type your message..."):
+    # Add user message to chat history
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    # Display user message
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    
+    # Display assistant response
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        full_response = ""
+        
+        # Call our FastAPI endpoint
+        try:
+            response = client.chat.completions.create(
+                model="facebook/opt-125m",
+                messages=st.session_state.messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=False
+            )
+            
+            full_response = response.choices[0].message.content
+            processing_time = getattr(response, "processing_time", None)
+            
+            # Simulate streaming
+            for chunk in full_response.split():
+                full_response = chunk + " "
+                message_placeholder.markdown(full_response + "▌")
+                time.sleep(0.05)
+            message_placeholder.markdown(full_response)
+            
+            # Display stats
+            st.caption(f"Generated in {processing_time:.2f}s | Tokens: {response.usage.completion_tokens}")
+            
+        except Exception as e:
+            st.error(f"Error calling API: {str(e)}")
+            full_response = "Sorry, I encountered an error."
+            message_placeholder.markdown(full_response)
+    
+    # Add assistant response to chat history
+    st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+
+    3. (Optional) Test Client (test_client.py)
+    from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="no-key-required"
+)
+
+response = client.chat.completions.create(
+    model="facebook/opt-125m",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Explain AI in simple terms"}
+    ],
+    temperature=0.7,
+    max_tokens=50
+)
+
+print("Response:")
+print(response.choices[0].message.content)
+print(f"\nUsage: {response.usage}")
+
+========================
+
+How to Run This System
+First terminal - Start FastAPI server:
+python vllm_server.py
+
+Second terminal - Start Streamlit app:
+streamlit run streamlit_app.py
+
+(Optional) Test the API:
+python test_client.py
+    
