@@ -1,15 +1,25 @@
-import streamlit as st
-
-# Custom CSS to style expander headers
-st.markdown("""
-<style>
-    .st-emotion-cache-1q7spjk {  /* Targets expander header */
+st.markdown(
+    """
+    <style>
+    div[data-testid="stExpander"] div[role="button"] p {
         font-size: 20px !important;
         font-weight: bold !important;
     }
-</style>
-""", unsafe_allow_html=True)
-
-# Now create your expander normally
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 with st.expander("Session"):
-    st.write("Your content goes here")
+    st.write("Your content here")
+
+
+from streamlit.components.v1 import html
+
+html(
+    """
+    <details open>
+        <summary style="font-size: 20px; font-weight: bold;">Session</summary>
+        <p>Your content here</p>
+    </details>
+    """
+)
