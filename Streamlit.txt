@@ -1,0 +1,14 @@
+import streamlit as st
+
+# Simulated user info (e.g., parsed from JWT)
+user = {
+    "username": "bob",
+    "groups": ["user"]  # Change to ["admin"] to test admin view
+}
+
+# Show different views based on role
+if "admin" in user["groups"]:
+    with st.expander("Admin Settings"):
+        st.write("Secret admin controls go here...")
+else:
+    st.write("Welcome, user!"
