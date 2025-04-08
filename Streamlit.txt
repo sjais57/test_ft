@@ -41,25 +41,30 @@ st.markdown("""
 ggggg
 import streamlit as st
 
-# Render the expander
+# Your expander
 with st.expander("Sessions", expanded=True):
     st.write("This is the content inside the expander.")
 
-# Inject JavaScript + CSS to enlarge only "Sessions" title
+# JavaScript + CSS to enlarge "Sessions" expander title
 st.markdown("""
     <style>
-        .custom-expander summary {
+        .custom-sessions-expander summary {
             font-size: 28px !important;
             font-weight: bold !important;
+            color: #2c3e50;
         }
     </style>
+
     <script>
-        const expanders = Array.from(document.querySelectorAll("details"));
-        expanders.forEach(el => {
-            const summary = el.querySelector("summary");
-            if (summary && summary.innerText.trim() === "Sessions") {
-                el.classList.add("custom-expander");
-            }
-        });
+        // Delay to wait for DOM rendering
+        setTimeout(function() {
+            const expanders = document.querySelectorAll("details");
+            expanders.forEach((el) => {
+                const summary = el.querySelector("summary");
+                if (summary && summary.innerText.trim() === "Sessions") {
+                    el.classList.add("custom-sessions-expander");
+                }
+            });
+        }, 500);
     </script>
 """, unsafe_allow_html=True)
