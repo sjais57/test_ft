@@ -1,99 +1,15 @@
-koimport streamlit as st
-
-# Simulated user info (e.g., parsed from JWT)
-user = {
-    "username": "bob",
-    "groups": ["user"]  # Change to ["admin"] to test admin view
-}
-
-# Show different views based on role
-if "admin" in user["groups"]:
-    with st.expander("Admin Settings"):
-        st.write("Secret admin controls go here...")
-else:
-    st.write("Welcome, user!"
 import streamlit as st
 
-# Render the expander
-with st.expander("Admin Settings"):
-    st.write("Only admins can see this content.")
-
-# Inject CSS + JS to specifically enlarge 'Admin Settings'
+# Custom CSS to style expander headers
 st.markdown("""
-    <style>
-        .custom-expander summary {
-            font-size: 24px !important;
-        }
-    </style>
-    <script>
-        // Wait for DOM to load and add custom class to 'Admin Settings'
-        const observer = new MutationObserver(() => {
-            document.querySelectorAll('details').forEach((el) => {
-                if (el.textContent.includes("Admin Settings")) {
-                    el.classList.add("custom-expander");
-                }
-            });
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
-    </script>
+<style>
+    .st-emotion-cache-1q7spjk {  /* Targets expander header */
+        font-size: 20px !important;
+        font-weight: bold !important;
+    }
+</style>
 """, unsafe_allow_html=True)
 
-ggggg
-import streamlit as st
-
-# Your expander
-with st.expander("Sessions", expanded=True):
-    st.write("This is the content inside the expander.")
-
-# JavaScript + CSS to enlarge "Sessions" expander title
-st.markdown("""
-    <style>
-        .custom-sessions-expander summary {
-            font-size: 28px !important;
-            font-weight: bold !important;
-            color: #2c3e50;
-
-
-import streamlit as st
-import streamlit.components.v1 as components
-
-# Create the expander
-with st.expander("Sessions", expanded=True):
-    st.write("Only this expander title will be enlarged.")
-
-# Use JavaScript via Streamlit components to update the font size
-components.html(
-    """
-    <script>
-    // Wait until DOM is ready and look for the expander title
-    setTimeout(() => {
-        const expanders = document.querySelectorAll("summary");
-        expanders.forEach((summary) => {
-            if (summary.innerText.trim() === "Sessions") {
-                summary.style.fontSize = "28px";
-                summary.style.fontWeight = "bold";
-                summary.style.color = "#2c3e50";
-            }
-        });
-    }, 500);
-    </script>
-    """,
-    height=0,
-)
-
-        }
-    </style>
-
-    <script>
-        // Delay to wait for DOM rendering
-        setTimeout(function() {
-            const expanders = document.querySelectorAll("details");
-            expanders.forEach((el) => {
-                const summary = el.querySelector("summary");
-                if (summary && summary.innerText.trim() === "Sessions") {
-                    el.classList.add("custom-sessions-expander");
-                }
-            });
-        }, 500);
-    </script>
-""", unsafe_allow_html=True)
+# Now create your expander normally
+with st.expander("Session"):
+    st.write("Your content goes here")
