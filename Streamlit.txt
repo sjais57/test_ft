@@ -12,3 +12,28 @@ if "admin" in user["groups"]:
         st.write("Secret admin controls go here...")
 else:
     st.write("Welcome, user!"
+import streamlit as st
+
+# Render the expander
+with st.expander("Admin Settings"):
+    st.write("Only admins can see this content.")
+
+# Inject CSS + JS to specifically enlarge 'Admin Settings'
+st.markdown("""
+    <style>
+        .custom-expander summary {
+            font-size: 24px !important;
+        }
+    </style>
+    <script>
+        // Wait for DOM to load and add custom class to 'Admin Settings'
+        const observer = new MutationObserver(() => {
+            document.querySelectorAll('details').forEach((el) => {
+                if (el.textContent.includes("Admin Settings")) {
+                    el.classList.add("custom-expander");
+                }
+            });
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    </script>
+""", unsafe_allow_html=True)
