@@ -1,4 +1,4 @@
-import streamlit as st
+koimport streamlit as st
 
 # Simulated user info (e.g., parsed from JWT)
 user = {
@@ -52,6 +52,35 @@ st.markdown("""
             font-size: 28px !important;
             font-weight: bold !important;
             color: #2c3e50;
+
+
+import streamlit as st
+import streamlit.components.v1 as components
+
+# Create the expander
+with st.expander("Sessions", expanded=True):
+    st.write("Only this expander title will be enlarged.")
+
+# Use JavaScript via Streamlit components to update the font size
+components.html(
+    """
+    <script>
+    // Wait until DOM is ready and look for the expander title
+    setTimeout(() => {
+        const expanders = document.querySelectorAll("summary");
+        expanders.forEach((summary) => {
+            if (summary.innerText.trim() === "Sessions") {
+                summary.style.fontSize = "28px";
+                summary.style.fontWeight = "bold";
+                summary.style.color = "#2c3e50";
+            }
+        });
+    }, 500);
+    </script>
+    """,
+    height=0,
+)
+
         }
     </style>
 
