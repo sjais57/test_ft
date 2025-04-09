@@ -1,0 +1,468 @@
+pip install fastapi uvicorn python-ldap opa-client python-jose[cryptography] passlib[bcrypt] python-multipart
+
+===========
+from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel
+from typing import Optional, List
+import ldap
+from opa_client.opa import OpaClient
+from datetime import datetime, timedelta
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+import os
+
+# ========== CONFIGURATION ==========
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here")  # Used for JWT signing
+ALGORITHM = "HS256"  # JWT algorithm
+ACCESS_TOKEN_EXPIRE_MINUTES = 30  # Token expiry time
+
+# LDAP Configuration (AD Server)
+LDAP_SERVER = "ldap://your-ad-server"  # Example: "ldap://ad.yourdomain.com"
+LDAP_DOMAIN = "yourdomain.com"  # Example: "yourdomain.com"
+LDAP_SEARCH_BASE = "dc=yourdomain,dc=com"  # Example: "dc=yourdomain,dc=com"
+LDAP_GROUP_SEARCH_BASE = "ou=Groups,dc=yourdomain,dc=com"  # Example: "ou=Groups,dc=yourdomain,dc=com"
+
+# OPA Configuration
+OPA_URL = "http://localhost:8181"  # OPA server URL
+OPA_POLICY_PATH = "authz/ad_groups"  # OPA policy path
+
+# ========== INITIALIZE FASTAPI ==========
+app = FastAPI()
+
+# ========== SECURITY SETUP ==========
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")  # Password hashing
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")  # OAuth2 token URL
+
+# ========== MODELS (Pydantic) ==========
+class Token(BaseModel):
+    access_token: str  # JWT token
+    token_type: str  # Usually "bearer"
+
+class TokenData(BaseModel):
+    username: Optional[str] = None  # AD username
+    groups: List[str] = []  # AD groups
+
+class User(BaseModel):
+    username: str  # AD username
+    email: Optional[str] = None  # AD email
+    full_name: Optional[str] = None  # AD display name
+    disabled: Optional[bool] = None  # Account status
+    groups: List[str] = []  # AD groups
+
+class UserInDB(User):
+    hashed_password: str  # Hashed password (not stored in AD, but used for JWT)
+
+# ========== LDAP AUTHENTICATION ==========
+def authenticate_with_ad(username: str, password: str) -> Optional[UserInDB]:
+    try:
+        # 1. Initialize LDAP connection
+        ldap_conn = ldap.initialize(LDAP_SERVER)
+        ldap_conn.set_option(ldap.OPT_REFERRALS, 0)  # Disable referral chasing
+        ldap_conn.protocol_version = ldap.VERSION3  # Use LDAP v3
+
+        # 2. Bind (authenticate) with AD credentials
+        user_dn = f"cn={username},ou=Users,{LDAP_SEARCH_BASE}"
+        ldap_conn.simple_bind_s(user_dn, password)
+
+        # 3. Search for user attributes
+        search_filter = f"(cn={username})"
+        result = ldap_conn.search_s(LDAP_SEARCH_BASE, ldap.SCOPE_SUBTREE, search_filter)
+
+        if not result:
+            return None  # User not found
+
+        # 4. Extract user details
+        user_dn, user_attrs = result[0]
+        email = user_attrs.get('mail', [b''])[0].decode('utf-8')
+        full_name = user_attrs.get('displayName', [b''])[0].decode('utf-8')
+
+        # 5. Get user's AD groups
+        group_search_filter = f"(member={user_dn})"
+        group_results = ldap_conn.search_s(LDAP_GROUP_SEARCH_BASE, ldap.SCOPE_SUBTREE, group_search_filter)
+        groups = [group_attrs['cn'][0].decode('utf-8') for _, group_attrs in group_results if 'cn' in group_attrs]
+
+        # 6. Create UserInDB object (for JWT)
+        user = UserInDB(
+            username=username,
+            hashed_password=pwd_context.hash(password),  # Not stored in AD, but needed for JWT
+            email=email,
+            full_name=full_name,
+            groups=groups,
+            disabled=False
+        )
+
+        return user
+
+    except ldap.INVALID_CREDENTIALS:
+        return None  # Invalid credentials
+    except ldap.LDAPError as e:
+        print(f"LDAP Error: {e}")
+        return None  # LDAP error
+    finally:
+        if 'ldap_conn' in locals():
+            ldap_conn.unbind_s()  # Close LDAP connection
+
+# ========== JWT TOKEN MANAGEMENT ==========
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()  # Copy input data
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta  # Set expiry time
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)  # Default expiry
+    to_encode.update({"exp": expire})  # Add expiry to token
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)  # Generate JWT
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])  # Decode JWT
+        username: str = payload.get("sub")  # Extract username
+        groups: List[str] = payload.get("groups", [])  # Extract groups
+        if username is None:
+            raise credentials_exception  # Invalid token
+        token_data = TokenData(username=username, groups=groups)
+    except JWTError:
+        raise credentials_exception  # JWT error
+
+    # Return user data (simplified for demo)
+    return User(
+        username=token_data.username,
+        groups=token_data.groups,
+        disabled=False
+    )
+
+# ========== OPA AUTHORIZATION ==========
+async def check_opa_authorization(user: User, path: str, method: str):
+    opa = OpaClient(opa_url=OPA_URL)  # Initialize OPA client
+
+    # Prepare input for OPA policy check
+    input_data = {
+        "user": {
+            "username": user.username,
+            "groups": user.groups
+        },
+        "path": path,
+        "method": method
+    }
+
+    try:
+        result = opa.check_policy(opa_policy_path=OPA_POLICY_PATH, input_data=input_data)
+        return result.get('result', False)  # True if authorized, False if not
+    except Exception as e:
+        print(f"OPA Error: {e}")
+        return False  # Deny by default if OPA fails
+
+# Dependency for protected routes
+async def authorize(user: User = Depends(get_current_user), request: Request = None):
+    if not await check_opa_authorization(user, request.url.path, request.method):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this resource"
+        )
+    return user  # Only returns if authorized
+
+# ========== FASTAPI ROUTES ==========
+@app.post("/token", response_model=Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    # 1. Authenticate with AD
+    user = authenticate_with_ad(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 2. Generate JWT token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username, "groups": user.groups},
+        expires_delta=access_token_expires
+    )
+
+    # 3. Return token
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/users/me/", response_model=User)
+async def read_users_me(current_user: User = Depends(authorize)):
+    return current_user  # Only accessible if OPA allows
+
+@app.get("/protected-resource")
+async def protected_resource(current_user: User = Depends(authorize)):
+    return {"message": "You have access to this protected resource"}
+
+# ========== MAIN EXECUTION ==========
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+=============
+start opa server:
+opa run --server ./policies
+
+uvicorn main:app --reload
+
+curl -X POST "http://localhost:8000/token" \
+-H "Content-Type: application/x-www-form-urlencoded" \
+-d "username=ad_username&password=ad_password"
+
+
+curl -X GET "http://localhost:8000/protected-resource" \
+-H "Authorization: Bearer YOUR_JWT_TOKEN"
+
+
+
+============
+# Add this to your existing imports
+from fastapi import Body
+from typing import Dict, Any
+
+# ... (keep all your existing code) ...
+
+# Add this new endpoint
+@app.post("/v1/completions", response_model=Dict[str, Any])
+async def generate_completion(
+    prompt: str = Body(..., embed=True),
+    max_tokens: int = Body(100),
+    temperature: float = Body(0.7),
+    current_user: User = Depends(authorize)  # This enforces authentication & authorization
+):
+    """
+    Secure VLLM inference endpoint that requires:
+    - Valid AD authentication (JWT token)
+    - OPA authorization (group permissions)
+    """
+    try:
+        # Your existing VLLM inference logic here
+        # Example (replace with your actual VLLM code):
+        result = {
+            "completion": "This is a generated response",
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "user": current_user.username  # Log which user made the request
+        }
+        return result
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Inference error: {str(e)}"
+        )
+
+
+  ===========
+
+from fastapi import Request
+from fastapi.middleware import Middleware
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+@app.post("/v1/completions")
+@limiter.limit("5/minute")  # Adjust as needed
+async def generate_completion(request: Request, ...):
+    # ... existing code ...
+
+import logging
+logger = logging.getLogger("vllm-auth")
+
+@app.post("/v1/completions")
+async def generate_completion(..., current_user: User = Depends(authorize)):
+    logger.info(f"VLLM request by {current_user.username}: {prompt[:50]}...")
+    # ... existing code ...
+
+====================
+from datetime import datetime, timedelta
+from jose import jwt
+
+# Config
+SECRET_KEY = "your-secret-key"  # Should be env var in production
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+def create_access_token(username: str, groups: list[str]):
+    expires = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    payload = {
+        "sub": username,          # Standard JWT field for subject
+        "groups": groups,         # Custom claim for AD groups
+        "exp": expires.timestamp()  # Expiration time
+    }
+    
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+===============
+
+from fastapi.security import OAuth2PasswordBearer
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+@app.get("/protected")
+async def protected_route(token: str = Depends(oauth2_scheme)):
+    # Token is automatically extracted from the "Bearer" header
+    return {"message": "Access granted"}
+
+
+=================
+different endpoints on permission level:
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel
+from typing import List
+
+app = FastAPI()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+class User(BaseModel):
+    username: str
+    groups: List[str]
+
+# Mock AD authentication (replace with real LDAP code)
+def authenticate_with_ad(username: str, password: str) -> User:
+    # In reality, this would query AD/LDAP
+    if username == "admin":
+        return User(username=username, groups=["admin"])
+    else:
+        return User(username=username, groups=["user"])
+
+# Dependency to get current user
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    # In reality, decode JWT to get groups
+    user = authenticate_with_ad(token, "dummy_password")
+    return user
+
+# Dependency for OPA authorization
+async def authorize(user: User = Depends(get_current_user), required_group: str = None):
+    if required_group and required_group not in user.groups:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    return user
+
+# Protected endpoints
+@app.get("/read-data")
+async def read_data(user: User = Depends(authorize)):
+    return {"message": "Read access granted"}
+
+@app.post("/create-data")
+async def create_data(user: User = Depends(authorize(required_group="admin"))):
+    return {"message": "Create access granted"}
+
+@app.delete("/delete-data")
+async def delete_data(user: User = Depends(authorize(required_group="admin"))):
+    return {"message": "Delete access granted"}
+
+
+========================
+from datetime import datetime, timedelta
+from jose import jwt
+from passlib.context import CryptContext
+import ldap  # For AD integration
+
+# Configuration
+SECRET_KEY = "your-secret-key-here"  # Use env var in production!
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Password hashing (for local user cache if needed)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def authenticate_with_ad(username: str, password: str):
+    """Authenticate with AD and return user groups"""
+    try:
+        # 1. Connect to AD
+        ldap_conn = ldap.initialize("ldap://your-ad-server")
+        ldap_conn.set_option(ldap.OPT_REFERRALS, 0)
+        
+        # 2. Bind (authenticate)
+        user_dn = f"cn={username},ou=Users,dc=yourdomain,dc=com"
+        ldap_conn.simple_bind_s(user_dn, password)
+        
+        # 3. Get user groups
+        search_filter = f"(member={user_dn})"
+        groups = ldap_conn.search_s(
+            "ou=Groups,dc=yourdomain,dc=com",
+            ldap.SCOPE_SUBTREE,
+            search_filter,
+            ["cn"]
+        )
+        group_names = [g[1]["cn"][0].decode("utf-8") for g in groups]
+        
+        return {
+            "username": username,
+            "groups": group_names
+        }
+        
+    except ldap.INVALID_CREDENTIALS:
+        return None
+    finally:
+        ldap_conn.unbind()
+
+def create_access_token(user_info: dict):
+    """Generate JWT with AD group information"""
+    expires = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    payload = {
+        "sub": user_info["username"],       # Unique user identifier
+        "name": user_info.get("name", ""),  # From AD displayName
+        "groups": user_info["groups"],      # AD group memberships
+        "iat": datetime.utcnow(),           # Issued at
+        "exp": expires,                     # Expiration
+        "iss": "your-fastapi-app"           # Issuer
+    }
+    
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+# FastAPI Token Endpoint
+@app.post("/token")
+async def login_for_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_with_ad(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid AD credentials"
+        )
+    
+    token = create_access_token(user)
+    return {"access_token": token, "token_type": "bearer"}
+===============
+
+Token validation:
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return {
+            "username": payload["sub"],
+            "groups": payload["groups"]
+        }
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+=========================
+
+# Admin-only endpoint
+@app.post("/admin/action")
+async def admin_action(user: dict = Depends(get_current_user)):
+    if "admin" not in user["groups"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return {"message": "Admin action performed"}
+
+# User endpoint
+@app.get("/user/data")
+async def user_data(user: dict = Depends(get_current_user)):
+    if "user" not in user["groups"]:
+        raise HTTPException(status_code=403, detail="User access required")
+    return {"data": "Some user-specific data"}
