@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from auth.file_auth import authenticate_file
 from auth.ldap_auth import authenticate_ldap, LDAP_AVAILABLE
 from utils.api_key import get_additional_claims
+from fastapi import Body
+from jose import jwt, ExpiredSignatureError
 
 # Load environment
 load_dotenv()
@@ -45,6 +47,15 @@ def get_team_id_from_user(username, user_data):
     elif "ml-team" in groups:
         return "ml-team"
     return "general-users"
+
+class DecodeRequest(BaseModel):
+    token: str
+    skipVerification: Optional[bool] = False
+    secret: Optional[str] = None
+
+class ValidateRequest(BaseModel):
+    token: str
+    secret: Optional[str] = None
 
 def create_jwt_token(identity: str, claims: dict, secret: str, expires_delta: timedelta, token_type: str):
     now = datetime.now(timezone.utc)
@@ -107,3 +118,50 @@ async def login(data: TokenRequest):
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+@app.post("/decode")
+async def decode_token_route(data: DecodeRequest):
+    secret = data.secret or JWT_SECRET_KEY
+    algorithm = JWT_ALGORITHM
+    try:
+        if data.skipVerification:
+            decoded = jwt.decode(data.token, secret, algorithms=[algorithm], options={"verify_signature": False})
+            decoded["warning"] = "Signature verification skipped"
+        else:
+            decoded = jwt.decode(data.token, secret, algorithms=[algorithm])
+        return JSONResponse(content=decoded)
+    except JWTError as e:
+        return JSONResponse(status_code=400, content={"error": f"JWT decoding failed: {str(e)}"})
+
+@app.post("/validate")
+async def validate_token_route(data: ValidateRequest):
+    secret = data.secret or JWT_SECRET_KEY
+    algorithm = JWT_ALGORITHM
+    try:
+        decoded = jwt.decode(data.token, secret, algorithms=[algorithm])
+        exp = datetime.utcfromtimestamp(decoded.get("exp", 0)).strftime("%Y-%m-%d %H:%M:%S UTC")
+        iat = datetime.utcfromtimestamp(decoded.get("iat", 0)).strftime("%Y-%m-%d %H:%M:%S UTC")
+        groups = decoded.get("groups", [])
+        return {
+            "valid": True,
+            "signature_verified": True,
+            "expired": False,
+            "expiry_time": exp,
+            "issued_at": iat,
+            "subject": decoded.get("sub"),
+            "groups": groups,
+            "claims": decoded
+        }
+    except ExpiredSignatureError:
+        return {
+            "valid": False,
+            "signature_verified": True,
+            "expired": True,
+            "error": "Token has expired"
+        }
+    except JWTError as e:
+        return {
+            "valid": False,
+            "signature_verified": False,
+            "expired": False,
+            "error": f"JWT validation failed: {str(e)}"
+        }
