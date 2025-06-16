@@ -1,0 +1,556 @@
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, Any, List, Union
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Body, Query
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+import jwt
+import uuid
+import yaml
+import glob
+import logging
+from dotenv import load_dotenv
+import pathlib
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
+
+# Authentication method
+AUTH_METHOD = os.getenv("AUTH_METHOD", "file")  # "ldap" or "file"
+ALWAYS_USE_BASE_CLAIMS = os.getenv("ALWAYS_USE_BASE_CLAIMS", "true").lower() == "true"
+
+# JWT Configuration
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-key")
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60  # 1 hour
+REFRESH_TOKEN_EXPIRE_DAYS = 30  # 30 days
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="JWT Auth API",
+    description="API for JWT token generation and management",
+    version="1.0.0"
+)
+
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Models
+class Token(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    note: Optional[str] = None
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+
+class User(BaseModel):
+    username: str
+    email: Optional[str] = None
+    groups: List[str] = []
+    roles: List[str] = []
+    disabled: Optional[bool] = None
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+    api_key: Optional[str] = None
+    secret: Optional[str] = None
+
+class APIKeyData(BaseModel):
+    owner: str
+    provider_permissions: List[str] = ["openai"]
+    endpoint_permissions: List[str] = ["/v1/chat/completions", "/v1/embeddings"]
+    static_claims: Dict[str, Any] = Field(
+        default={
+            "models": ["gpt-3.5-turbo"],
+            "rate_limit": 20,
+            "tier": "standard",
+            "exp_hours": 1
+        }
+    )
+    dynamic_claims: Dict[str, Any] = Field(default_factory=dict)
+
+class APIKeyCreate(APIKeyData):
+    pass
+
+class APIKeyResponse(APIKeyData):
+    id: str
+    api_key: str
+
+class TokenValidationResponse(BaseModel):
+    valid: bool
+    signature_verified: bool
+    expired: bool
+    expiry_time: Optional[str] = None
+    issued_at: Optional[str] = None
+    issuer: Optional[str] = None
+    subject: Optional[str] = None
+    error: Optional[str] = None
+
+class RequestDebugInfo(BaseModel):
+    headers: Dict[str, str]
+    method: str
+    url: str
+    path: str
+    args: Dict[str, str]
+    form: Optional[Dict[str, str]] = None
+    json: Optional[Any] = None
+    cookies: Dict[str, str]
+    remote_addr: str
+
+class DebugResponse(BaseModel):
+    request_info: RequestDebugInfo
+    jwt_info: Optional[Dict[str, Any]] = None
+    response_info: Dict[str, Any]
+
+# Helper functions
+def get_team_id_from_user(username: str, user_data: Dict[str, Any]) -> str:
+    """Determine team ID from user's groups"""
+    groups = user_data.get("groups", [])
+    if "administrators" in groups or "admins" in groups:
+        return "admin-team"
+    elif "ai-team" in groups:
+        return "ai-team"
+    elif "ml-team" in groups:
+        return "ml-team"
+    return "general-users"
+
+def create_access_token(
+    data: dict,
+    expires_delta: Optional[timedelta] = None,
+    custom_secret: Optional[str] = None
+) -> str:
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    
+    secret = custom_secret if custom_secret else JWT_SECRET_KEY
+    encoded_jwt = jwt.encode(to_encode, secret, algorithm=JWT_ALGORITHM)
+    return encoded_jwt
+
+def create_refresh_token(
+    data: dict,
+    expires_delta: Optional[timedelta] = None,
+    custom_secret: Optional[str] = None
+) -> str:
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    
+    secret = custom_secret if custom_secret else JWT_SECRET_KEY
+    encoded_jwt = jwt.encode(to_encode, secret, algorithm=JWT_ALGORITHM)
+    return encoded_jwt
+
+def authenticate_user(username: str, password: str):
+    """Placeholder for authentication logic - implement your LDAP or file auth here"""
+    # This would be replaced with your actual authentication logic
+    authenticated = True  # Placeholder
+    user_data = {
+        "email": f"{username}@example.com",
+        "groups": ["users"],
+        "roles": ["user"]
+    }
+    return authenticated, user_data
+
+def get_additional_claims(api_key: Optional[str], user_context: Dict[str, Any]) -> Dict[str, Any]:
+    """Placeholder for getting additional claims from API key"""
+    # Implement your actual logic to get claims from API key
+    return {}
+
+# Authentication endpoints
+@app.post("/token", response_model=Token)
+async def login_for_access_token(
+    login_data: LoginRequest
+):
+    username = login_data.username
+    password = login_data.password
+    api_key = login_data.api_key
+    custom_secret = login_data.secret
+
+    # Authenticate user
+    authenticated, user_data = authenticate_user(username, password)
+    
+    if not authenticated:
+        error_message = "Invalid username or password"
+        if "error" in user_data:
+            error_message = user_data["error"]
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=error_message,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Create user context
+    user_context = {
+        "user_id": username,
+        "email": user_data.get("email", ""),
+        "groups": user_data.get("groups", []),
+        "roles": user_data.get("roles", []),
+        "team_id": get_team_id_from_user(username, user_data)
+    }
+
+    # Get additional claims from API key
+    api_key_claims = get_additional_claims(api_key, user_context)
+
+    # Merge user data with additional claims
+    claims = {**user_data, **api_key_claims}
+    
+    # Set expiration
+    expires_delta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    if 'exp_hours' in claims:
+        expires_delta = timedelta(hours=claims['exp_hours'])
+        logger.info(f"Using custom expiration time from API key: {claims['exp_hours']} hours")
+        claims.pop('exp_hours')
+    
+    # If custom secret is provided, use it with PyJWT directly
+    if custom_secret:
+        logger.info("Using custom secret for token generation")
+        
+        # Prepare the payload with the standard JWT claims
+        now = datetime.now(timezone.utc)
+        access_token_exp = now + expires_delta
+        refresh_token_exp = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        
+        # Add standard JWT claims to the payload
+        access_payload = {
+            "iat": now,
+            "nbf": now,
+            "jti": str(uuid.uuid4()),
+            "exp": access_token_exp,
+            "sub": username,
+            "type": "access",
+            "fresh": True,
+            **claims  # Include all the additional claims
+        }
+        
+        refresh_payload = {
+            "iat": now,
+            "nbf": now,
+            "jti": str(uuid.uuid4()),
+            "exp": refresh_token_exp,
+            "sub": username,
+            "type": "refresh",
+            **claims  # Include all the additional claims
+        }
+        
+        # Generate the tokens using PyJWT directly with the custom secret
+        access_token = jwt.encode(access_payload, custom_secret, algorithm=JWT_ALGORITHM)
+        refresh_token = jwt.encode(refresh_payload, custom_secret, algorithm=JWT_ALGORITHM)
+        
+        # Add note to response indicating custom secret was used
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "note": "Tokens generated with custom secret - will not be usable with standard application routes unless the same secret is provided for verification"
+        }
+    else:
+        # Standard token creation with application secret
+        access_token = create_access_token(
+            data={
+                "sub": username,
+                "jti": str(uuid.uuid4()),
+                "type": "access",
+                "fresh": True,
+                **claims
+            },
+            expires_delta=expires_delta
+        )
+        
+        refresh_token = create_refresh_token(
+            data={
+                "sub": username,
+                "jti": str(uuid.uuid4()),
+                "type": "refresh",
+                **claims
+            },
+            expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        )
+        
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer"
+        }
+
+@app.post("/refresh", response_model=Token)
+async def refresh_token(
+    refresh_token: str = Body(..., embed=True)
+):
+    try:
+        # Verify refresh token
+        payload = jwt.decode(refresh_token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Remove reserved claims
+        reserved_claims = ['exp', 'iat', 'nbf', 'jti', 'type', 'fresh']
+        additional_claims = {k: v for k, v in payload.items() if k not in reserved_claims}
+
+        # Create new access token
+        access_token = create_access_token(
+            data={
+                "sub": username,
+                "jti": str(uuid.uuid4()),
+                "type": "access",
+                **additional_claims
+            },
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer"
+        }
+
+    except jwt.PyJWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+# Token validation endpoints
+@app.post("/decode")
+async def decode_token_endpoint(
+    token: str = Body(..., embed=True),
+    skip_verification: bool = Body(False, alias="skipVerification"),
+    custom_secret: Optional[str] = Body(None)
+):
+    secret_key = custom_secret if custom_secret else JWT_SECRET_KEY
+    
+    try:
+        if skip_verification:
+            decoded = jwt.decode(token, options={"verify_signature": False})
+            decoded["warning"] = "Token signature verification was skipped! This token may not be valid."
+            if custom_secret:
+                decoded["note"] = "Custom secret was provided but not used due to skip verification"
+            return decoded
+        else:
+            decoded = jwt.decode(token, secret_key, algorithms=[JWT_ALGORITHM])
+            if custom_secret:
+                decoded["note"] = "Decoded using provided custom secret"
+            return decoded
+    except jwt.PyJWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+@app.post("/validate", response_model=TokenValidationResponse)
+async def validate_token(
+    token: str = Body(..., embed=True)
+):
+    try:
+        decoded = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        
+        expiry = datetime.fromtimestamp(decoded['exp'])
+        issue_time = datetime.fromtimestamp(decoded['iat'])
+        is_expired = datetime.now(timezone.utc) > expiry
+        
+        return {
+            "valid": True,
+            "signature_verified": True,
+            "expired": is_expired,
+            "expiry_time": expiry.isoformat(),
+            "issued_at": issue_time.isoformat(),
+            "issuer": decoded.get('iss', 'Not specified'),
+            "subject": decoded.get('sub', 'Not specified')
+        }
+    except jwt.ExpiredSignatureError:
+        return {
+            "valid": False,
+            "signature_verified": True,
+            "expired": True,
+            "error": "Token has expired"
+        }
+    except jwt.PyJWTError as e:
+        error_msg = str(e)
+        signature_failed = "signature" in error_msg.lower()
+        expired = "expired" in error_msg.lower()
+        
+        return {
+            "valid": False,
+            "signature_verified": not signature_failed,
+            "expired": expired,
+            "error": error_msg
+        }
+
+# Protected endpoint example
+@app.get("/users/me")
+async def read_users_me(token: str = Depends(OAuth2PasswordBearer(tokenUrl="token"))):
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        username = payload.get("sub")
+        if username is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials",
+            )
+        return {"username": username}
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+        )
+
+# API Key Management Endpoints
+@app.get("/api-keys")
+async def get_api_keys(token: str = Depends(OAuth2PasswordBearer(tokenUrl="token"))):
+    """Get a list of all API keys (admin only)"""
+    try:
+        # Verify token and check admin status
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        groups = payload.get('groups', [])
+        
+        if 'administrators' not in groups and 'admins' not in groups:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Administrator access required"
+            )
+        
+        # Get API keys directory path
+        api_keys_dir = os.getenv("API_KEYS_DIR", "config/api_keys")
+        
+        if not os.path.exists(api_keys_dir):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="API keys directory not found"
+            )
+        
+        # Get all API key files (excluding base key)
+        api_key_files = glob.glob(os.path.join(api_keys_dir, "*.yaml"))
+        api_keys = []
+        
+        for key_file in api_key_files:
+            filename = os.path.basename(key_file)
+            if filename != "base_api_key.yaml":  # Replace with your BASE_API_KEY_FILE
+                try:
+                    with open(key_file, 'r') as f:
+                        key_data = yaml.safe_load(f)
+                        
+                    api_keys.append({
+                        'filename': filename,
+                        'id': key_data.get('id', ''),
+                        'owner': key_data.get('owner', ''),
+                        'provider_permissions': key_data.get('provider_permissions', []),
+                        'endpoint_permissions': key_data.get('endpoint_permissions', []),
+                        'static_claims': key_data.get('claims', {}).get('static', {})
+                    })
+                except Exception as e:
+                    logger.error(f"Error reading API key file {filename}: {str(e)}")
+        
+        return api_keys
+    except jwt.PyJWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e)
+        )
+
+# Additional API key endpoints would follow the same pattern...
+
+# Debug endpoint
+@app.api_route("/debug/request-info", methods=["GET", "POST"])
+async def request_debug_info(request: Request):
+    """Endpoint for debugging request information"""
+    # Collect request information
+    request_info = {
+        "headers": dict(request.headers),
+        "method": request.method,
+        "url": str(request.url),
+        "path": request.url.path,
+        "args": dict(request.query_params),
+        "form": await request.form() if request.method == "POST" else None,
+        "json": await request.json() if request.method == "POST" else None,
+        "cookies": request.cookies,
+        "remote_addr": request.client.host if request.client else None,
+    }
+    
+    # Check for JWT token in Authorization header
+    jwt_info = {}
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header and auth_header.startswith('Bearer '):
+        token = auth_header.split(' ')[1]
+        jwt_info["token"] = token
+        
+        # Check for custom secret in query parameters
+        custom_secret = request.query_params.get('secret', None)
+        if custom_secret:
+            jwt_info["using_custom_secret"] = True
+            
+        # Determine which secret to use
+        secret_key = custom_secret if custom_secret else JWT_SECRET_KEY
+        
+        # Try to decode the token without verification
+        try:
+            # First attempt standard verification
+            try:
+                decoded = jwt.decode(token, secret_key, algorithms=[JWT_ALGORITHM])
+                jwt_info["decoded"] = decoded
+                jwt_info["verified"] = True
+            except Exception as e:
+                # If verification fails, try decoding without verification
+                jwt_info["verification_error"] = str(e)
+                jwt_info["verified"] = False
+                jwt_info["warning"] = "Token signature verification failed! Showing unverified token contents."
+                
+                # Decode without verification
+                decoded = jwt.decode(token, options={"verify_signature": False})
+                jwt_info["decoded"] = decoded
+        except Exception as e:
+            jwt_info["error"] = f"Failed to decode token: {str(e)}"
+    
+    # Create response with detailed information
+    response_data = {
+        "request_info": request_info,
+        "jwt_info": jwt_info if jwt_info else None,
+        "response_info": {
+            "status_code": 200,
+            "timestamp": str(datetime.now())
+        }
+    }
+    
+    return response_data
+
+# How to run the application
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv('PORT', 8000)))
