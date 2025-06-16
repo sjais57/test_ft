@@ -165,3 +165,37 @@ async def validate_token_route(data: ValidateRequest):
             "expired": False,
             "error": f"JWT validation failed: {str(e)}"
         }
+============
+Sample:
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
+from datetime import datetime, timedelta
+import jwt
+
+app = FastAPI()
+
+# Configuration
+SECRET_KEY = "your_secret_key"
+ALGORITHM = "HS256"
+DEFAULT_EXPIRY_MINUTES = 30
+
+class TokenRequest(BaseModel):
+    username: str
+    expiry_minutes: int = DEFAULT_EXPIRY_MINUTES
+
+@app.get("/")
+def read_root():
+    return {"message": "JWT Generator API is running."}
+
+@app.post("/generate-token")
+def generate_token(request: TokenRequest):
+    try:
+        expiry = datetime.utcnow() + timedelta(minutes=request.expiry_minutes)
+        payload = {
+            "sub": request.username,
+            "exp": expiry
+        }
+        token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+        return {"token": token}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating token: {str(e)}")
