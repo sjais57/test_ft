@@ -1,201 +1,35 @@
-import os
-import uuid
-import logging
-from datetime import datetime, timedelta, timezone
-from typing import Optional
-from fastapi import FastAPI, HTTPException, Depends, Request
-from fastapi.responses import JSONResponse, HTMLResponse
-from fastapi.templating import Jinja2Templates
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import OAuth2PasswordRequestForm
-from jose import jwt, JWTError
-from pydantic import BaseModel
-from dotenv import load_dotenv
-from auth.file_auth import authenticate_file
-from auth.ldap_auth import authenticate_ldap, LDAP_AVAILABLE
-from utils.api_key import get_additional_claims
-from fastapi import Body
-from jose import jwt, ExpiredSignatureError
-
-# Load environment
-load_dotenv()
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-key")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("ACCESS_TOKEN_EXPIRE_HOURS", 1))
-REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 30))
-AUTH_METHOD = os.getenv("AUTH_METHOD", "file")
-ALWAYS_USE_BASE_CLAIMS = os.getenv("ALWAYS_USE_BASE_CLAIMS", "true").lower() == "true"
-
-if AUTH_METHOD == "ldap" and not LDAP_AVAILABLE:
-    logging.warning("LDAP unavailable, falling back to file auth.")
-    AUTH_METHOD = "file"
-
-app = FastAPI()
-templates = Jinja2Templates(directory="templates")
-
-class TokenRequest(BaseModel):
-    username: str
-    password: str
-    api_key: Optional[str] = None
-    secret: Optional[str] = None
-
-def get_team_id_from_user(username, user_data):
-    groups = user_data.get("groups", [])
-    if "administrators" in groups or "admins" in groups:
-        return "admin-team"
-    elif "ai-team" in groups:
-        return "ai-team"
-    elif "ml-team" in groups:
-        return "ml-team"
-    return "general-users"
-
-class DecodeRequest(BaseModel):
-    token: str
-    skipVerification: Optional[bool] = False
-    secret: Optional[str] = None
-
-class ValidateRequest(BaseModel):
-    token: str
-    secret: Optional[str] = None
-
-def create_jwt_token(identity: str, claims: dict, secret: str, expires_delta: timedelta, token_type: str):
-    now = datetime.now(timezone.utc)
-    payload = {
-        "iat": now,
-        "nbf": now,
-        "jti": str(uuid.uuid4()),
-        "exp": now + expires_delta,
-        "sub": identity,
-        "type": token_type,
-        "fresh": token_type == "access",
-        **claims
-    }
-    return jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
-
-@app.post("/token")
-async def login(data: TokenRequest):
-    if not data.username or not data.password:
-        raise HTTPException(status_code=400, detail="Missing username or password")
-
-    if AUTH_METHOD == "ldap":
-        authenticated, user_data = authenticate_ldap(data.username, data.password)
-    else:
-        authenticated, user_data = authenticate_file(data.username, data.password)
-
-    if not authenticated:
-        raise HTTPException(status_code=401, detail=user_data.get("error", "Invalid username or password"))
-
-    user_context = {
-        "user_id": data.username,
-        "email": user_data.get("email", ""),
-        "groups": user_data.get("groups", []),
-        "roles": user_data.get("roles", []),
-        "team_id": get_team_id_from_user(data.username, user_data)
-    }
-
-    if data.api_key:
-        user_context["api_key_id"] = data.api_key
-        claims = get_additional_claims(data.api_key, user_context)
-    else:
-        claims = get_additional_claims(None, user_context)
-
-    claims = {**user_data, **claims}
-    expires = timedelta(hours=claims.pop("exp_hours", ACCESS_TOKEN_EXPIRE_HOURS))
-
-    if data.secret:
-        access_token = create_jwt_token(data.username, claims, data.secret, expires, "access")
-        refresh_token = create_jwt_token(data.username, claims, data.secret, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS), "refresh")
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "note": "Custom secret used"
-        }
-
-    access_token = create_jwt_token(data.username, claims, JWT_SECRET_KEY, expires, "access")
-    refresh_token = create_jwt_token(data.username, claims, JWT_SECRET_KEY, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS), "refresh")
-
-    return {"access_token": access_token, "refresh_token": refresh_token}
-
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-@app.post("/decode")
-async def decode_token_route(data: DecodeRequest):
-    secret = data.secret or JWT_SECRET_KEY
-    algorithm = JWT_ALGORITHM
-    try:
-        if data.skipVerification:
-            decoded = jwt.decode(data.token, secret, algorithms=[algorithm], options={"verify_signature": False})
-            decoded["warning"] = "Signature verification skipped"
-        else:
-            decoded = jwt.decode(data.token, secret, algorithms=[algorithm])
-        return JSONResponse(content=decoded)
-    except JWTError as e:
-        return JSONResponse(status_code=400, content={"error": f"JWT decoding failed: {str(e)}"})
-
-@app.post("/validate")
-async def validate_token_route(data: ValidateRequest):
-    secret = data.secret or JWT_SECRET_KEY
-    algorithm = JWT_ALGORITHM
-    try:
-        decoded = jwt.decode(data.token, secret, algorithms=[algorithm])
-        exp = datetime.utcfromtimestamp(decoded.get("exp", 0)).strftime("%Y-%m-%d %H:%M:%S UTC")
-        iat = datetime.utcfromtimestamp(decoded.get("iat", 0)).strftime("%Y-%m-%d %H:%M:%S UTC")
-        groups = decoded.get("groups", [])
-        return {
-            "valid": True,
-            "signature_verified": True,
-            "expired": False,
-            "expiry_time": exp,
-            "issued_at": iat,
-            "subject": decoded.get("sub"),
-            "groups": groups,
-            "claims": decoded
-        }
-    except ExpiredSignatureError:
-        return {
-            "valid": False,
-            "signature_verified": True,
-            "expired": True,
-            "error": "Token has expired"
-        }
-    except JWTError as e:
-        return {
-            "valid": False,
-            "signature_verified": False,
-            "expired": False,
-            "error": f"JWT validation failed: {str(e)}"
-        }
-============
-Sample:
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
 from datetime import datetime, timedelta
 import jwt
 
 app = FastAPI()
 
-# Configuration
-SECRET_KEY = "your_secret_key"
+# Secret key to encode and decode JWTs
+SECRET_KEY = "your-secret-key"
 ALGORITHM = "HS256"
-DEFAULT_EXPIRY_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-class TokenRequest(BaseModel):
-    username: str
-    expiry_minutes: int = DEFAULT_EXPIRY_MINUTES
+# Dummy user
+fake_user_db = {
+    "user1": {
+        "username": "user1",
+        "password": "pass123"  # In real applications, use hashed passwords
+    }
+}
 
-@app.get("/")
-def read_root():
-    return {"message": "JWT Generator API is running."}
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
-@app.post("/generate-token")
-def generate_token(request: TokenRequest):
-    try:
-        expiry = datetime.utcnow() + timedelta(minutes=request.expiry_minutes)
-        payload = {
-            "sub": request.username,
-            "exp": expiry
-        }
-        token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-        return {"token": token}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating token: {str(e)}")
+@app.post("/token")
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = fake_user_db.get(form_data.username)
+    if not user or user["password"] != form_data.password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = create_access_token(data={"sub": user["username"]})
+    return {"access_token": token, "token_type": "bearer"}
