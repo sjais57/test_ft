@@ -1,0 +1,183 @@
+from datetime import datetime, timedelta, timezone
+from fastapi import FastAPI, HTTPException, status, Body
+from pydantic import BaseModel
+import jwt
+import uuid
+
+app = FastAPI()
+
+# Configuration for local development
+JWT_SECRET_KEY = "development-secret-key"  # Change for production!
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+REFRESH_TOKEN_EXPIRE_DAYS = 30
+
+# Request/Response Models
+class UserLogin(BaseModel):
+    username: str
+    password: str
+    api_key: Optional[str] = None
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+# Supporting Functions
+def authenticate_user(username: str, password: str) -> tuple[bool, dict]:
+    """
+    Simple local authentication - replace with your actual auth logic
+    
+    Returns:
+        tuple: (authenticated: bool, user_data: dict)
+    """
+    # Demo users - replace with your actual user database
+    users_db = {
+        "admin": {
+            "password": "admin",  # In production, store hashed passwords!
+            "email": "admin@localhost",
+            "groups": ["admin"],
+            "disabled": False
+        },
+        "user": {
+            "password": "password",
+            "email": "user@localhost",
+            "groups": ["users"],
+            "disabled": False
+        }
+    }
+    
+    if username in users_db and users_db[username]["password"] == password:
+        user_data = users_db[username].copy()
+        user_data.pop("password")  # Don't include password in the token
+        return True, {"username": username, **user_data}
+    
+    return False, {"error": "Invalid credentials"}
+
+def get_additional_claims(api_key: Optional[str] = None) -> dict:
+    """
+    Get additional claims based on API key
+    
+    Args:
+        api_key: Optional API key string
+        
+    Returns:
+        dict: Additional claims to include in the token
+    """
+    # Demo API keys - replace with your actual API key logic
+    api_keys_db = {
+        "test-key-1": {
+            "permissions": ["read", "write"],
+            "exp_hours": 2
+        },
+        "test-key-2": {
+            "permissions": ["read"],
+            "exp_hours": 1
+        }
+    }
+    
+    if api_key in api_keys_db:
+        return api_keys_db[api_key]
+    return {"permissions": ["read"]}  # Default claims
+
+def create_access_token(data: dict, expires_delta: timedelta) -> str:
+    """
+    Create a JWT access token
+    
+    Args:
+        data: Dictionary of claims to include
+        expires_delta: Token expiration time delta
+        
+    Returns:
+        str: Encoded JWT token
+    """
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + expires_delta
+    to_encode.update({
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+        "jti": str(uuid.uuid4()),
+        "type": "access"
+    })
+    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+def create_refresh_token(data: dict, expires_delta: timedelta) -> str:
+    """
+    Create a JWT refresh token
+    
+    Args:
+        data: Dictionary of claims to include
+        expires_delta: Token expiration time delta
+        
+    Returns:
+        str: Encoded JWT token
+    """
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + expires_delta
+    to_encode.update({
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+        "jti": str(uuid.uuid4()),
+        "type": "refresh"
+    })
+    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+# Token Endpoint
+@app.post("/token", response_model=TokenResponse)
+async def login(user_credentials: UserLogin):
+    """
+    Authenticate user and return JWT tokens
+    
+    Args:
+        user_credentials: UserLogin model with username, password, and optional API key
+        
+    Returns:
+        TokenResponse with access_token and refresh_token
+    """
+    # Authenticate user
+    authenticated, user_data = authenticate_user(
+        user_credentials.username, 
+        user_credentials.password
+    )
+    
+    if not authenticated:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=user_data.get("error", "Invalid credentials"),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Get additional claims from API key
+    claims = get_additional_claims(user_credentials.api_key)
+    
+    # Set token expiration
+    expires_delta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    if 'exp_hours' in claims:
+        expires_delta = timedelta(hours=claims['exp_hours'])
+        claims.pop('exp_hours')
+
+    # Prepare token data
+    token_data = {
+        "sub": user_data["username"],
+        "username": user_data["username"],
+        "email": user_data.get("email", ""),
+        "groups": user_data.get("groups", []),
+        **claims
+    }
+
+    # Create tokens
+    access_token = create_access_token(
+        data=token_data,
+        expires_delta=expires_delta
+    )
+
+    refresh_token = create_refresh_token(
+        data=token_data,
+        expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    )
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
