@@ -1,0 +1,219 @@
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, Any, List, Union
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Body
+from fastapi.security import OAuth2PasswordBearer
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import jwt
+import uuid
+import yaml
+import glob
+import logging
+from pathlib import Path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# JWT Configuration for local development
+JWT_SECRET_KEY = "development-secret-key"  # Change this in production!
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60  # 1 hour
+REFRESH_TOKEN_EXPIRE_DAYS = 30  # 30 days
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Local JWT Auth API",
+    description="JWT authentication service for local development",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# Models
+class Token(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+    api_key: Optional[str] = None
+
+class User(BaseModel):
+    username: str
+    email: Optional[str] = None
+    groups: List[str] = []
+    disabled: bool = False
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+
+# Helper functions
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+def authenticate_user(username: str, password: str):
+    """Simple local authentication - replace with your actual auth logic"""
+    # This is a placeholder - in a real app, verify against your user database
+    if username == "admin" and password == "admin":
+        return True, {
+            "username": "admin",
+            "email": "admin@localhost",
+            "groups": ["admin"],
+            "disabled": False
+        }
+    return False, {"error": "Invalid credentials"}
+
+def get_additional_claims(api_key: Optional[str] = None):
+    """Get additional claims from API key - customize for your needs"""
+    if api_key == "test-key":
+        return {"permissions": ["read", "write"], "exp_hours": 2}
+    return {"permissions": ["read"]}
+
+# Authentication endpoints
+@app.post("/token", response_model=Token)
+async def login(user_data: UserLogin):
+    authenticated, user = authenticate_user(user_data.username, user_data.password)
+    
+    if not authenticated:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Get additional claims from API key if provided
+    claims = get_additional_claims(user_data.api_key)
+    
+    # Set token expiration
+    expires_delta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    if 'exp_hours' in claims:
+        expires_delta = timedelta(hours=claims['exp_hours'])
+        claims.pop('exp_hours')
+
+    # Create tokens
+    access_token = create_access_token(
+        data={
+            "sub": user["username"],
+            "jti": str(uuid.uuid4()),
+            "type": "access",
+            "fresh": True,
+            "groups": user.get("groups", []),
+            **claims
+        },
+        expires_delta=expires_delta
+    )
+
+    refresh_token = create_refresh_token(
+        data={
+            "sub": user["username"],
+            "jti": str(uuid.uuid4()),
+            "type": "refresh",
+            "groups": user.get("groups", []),
+            **claims
+        }
+    )
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
+
+@app.post("/refresh", response_model=Token)
+async def refresh_token(refresh_token: str = Body(..., embed=True)):
+    try:
+        payload = jwt.decode(refresh_token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Create new access token
+        access_token = create_access_token(
+            data={
+                "sub": username,
+                "jti": str(uuid.uuid4()),
+                "type": "access",
+                "groups": payload.get("groups", [])
+            },
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer"
+        }
+
+    except jwt.PyJWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+# Protected endpoint example
+@app.get("/users/me")
+async def read_current_user(token: str = Depends(OAuth2PasswordBearer(tokenUrl="/token"))):
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        username = payload.get("sub")
+        if username is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials",
+            )
+        return {"username": username, "groups": payload.get("groups", [])}
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+        )
+
+# Debug endpoint
+@app.get("/debug")
+async def debug_info(request: Request):
+    """Simple debug endpoint to test the service"""
+    return {
+        "status": "running",
+        "timestamp": datetime.now().isoformat(),
+        "headers": dict(request.headers),
+        "client": request.client.host if request.client else None
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
