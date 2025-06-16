@@ -1,3 +1,60 @@
+import jwt
+import uuid
+from datetime import datetime, timedelta, timezone
+from getpass import getpass
+
+# Configuration
+JWT_SECRET_KEY = "your-very-secret-key-123!"  # Change this in production!
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+def authenticate_user(username: str, password: str) -> bool:
+    """Simple authentication - replace with your real authentication logic"""
+    # Demo users - in a real app, use a database or other auth system
+    users = {
+        "admin": "admin123",  # In production, store hashed passwords!
+        "user1": "password1",
+        "test": "test123"
+    }
+    return username in users and users[username] == password
+
+def generate_jwt_token(username: str) -> str:
+    """Generate a JWT token for the authenticated user"""
+    payload = {
+        "sub": username,
+        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        "jti": str(uuid.uuid4()),
+        "username": username
+    }
+    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+def main():
+    print("=== JWT Token Generator ===")
+    
+    while True:
+        username = input("Username: ").strip()
+        if not username:
+            print("Username cannot be empty. Try again.")
+            continue
+            
+        password = getpass("Password: ").strip()
+        if not password:
+            print("Password cannot be empty. Try again.")
+            continue
+        
+        if authenticate_user(username, password):
+            token = generate_jwt_token(username)
+            print("\n=== Your JWT Token ===")
+            print(token)
+            print("\nYou can verify this token at https://jwt.io")
+            break
+        else:
+            print("Invalid username or password. Please try again.\n")
+
+if __name__ == "__main__":
+    main()
+=================================================================================================================
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, status, Body
 from pydantic import BaseModel
