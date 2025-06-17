@@ -112,3 +112,63 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+==========================================
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
+from typing import Optional
+import jwt
+import datetime
+import ldap3
+
+app = FastAPI()
+
+SECRET_KEY = "verySecretValue"
+ALGORITHM = "HS256"
+
+LDAP_SERVER = "ldap://192.168.100.11"
+LDAP_DOMAIN = "example.com"
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+def authenticate_user(username: str, password: str):
+    server = ldap3.Server(LDAP_SERVER)
+    user_dn = f"{username}@{LDAP_DOMAIN}"
+    try:
+        conn = ldap3.Connection(server, user=user_dn, password=password, auto_bind=True)
+        return True
+    except ldap3.core.exceptions.LDAPBindError:
+        return False
+
+@app.post("/login", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    username = form_data.username
+    password = form_data.password
+
+    if not authenticate_user(username, password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password"
+        )
+
+    payload = {
+        "sub": username,
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(minutes=30)
+    }
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+    return {"access_token": token, "token_type": "bearer"}
+
+@app.get("/decode")
+def decode_token(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return {"token_data": payload}
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
