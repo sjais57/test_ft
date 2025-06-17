@@ -172,3 +172,80 @@ def decode_token(token: str):
         raise HTTPException(status_code=401, detail="Token has expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+====================================
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel
+from datetime import datetime, timedelta
+import jwt
+from ldap3 import Server, Connection, ALL, NTLM
+from fastapi.security import OAuth2PasswordRequestForm
+from typing import Dict
+
+# Configuration
+SECRET_KEY = "your-secret-key"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+LDAP_SERVER = "ldap://your.ldap.server"
+LDAP_USER_DN_FORMAT = "yourdomain\\{username}"  # e.g., "CORP\\{username}"
+
+# FastAPI app
+app = FastAPI()
+
+
+# Pydantic models
+class TokenRequest(BaseModel):
+    username: str
+    password: str
+
+
+class DecodeRequest(BaseModel):
+    token: str
+
+
+# Token creation function
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+# LDAP authentication function
+def authenticate_ldap_user(username: str, password: str):
+    user_dn = LDAP_USER_DN_FORMAT.format(username=username)
+    server = Server(LDAP_SERVER, get_info=ALL)
+
+    try:
+        conn = Connection(server, user=user_dn, password=password, authentication=NTLM, auto_bind=True)
+        return True
+    except Exception as e:
+        return False
+
+
+# JWT Token endpoint
+@app.post("/token")
+def login_for_access_token(form_data: TokenRequest):
+    if not authenticate_ldap_user(form_data.username, form_data.password):
+        raise HTTPException(status_code=401, detail="Invalid LDAP credentials")
+    
+    token_data = {
+        "sub": form_data.username,
+        "time": datetime.utcnow().isoformat()
+    }
+    token = create_access_token(data=token_data)
+    return {"access_token": token, "token_type": "bearer"}
+
+
+# Token decode endpoint
+@app.post("/decode")
+def decode_jwt_token(data: DecodeRequest):
+    try:
+        decoded_token = jwt.decode(data.token, SECRET_KEY, algorithms=[ALGORITHM])
+        return {"decoded": decoded_token}
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
