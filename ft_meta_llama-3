@@ -1,0 +1,84 @@
+pip install torch==2.1.2+cu118 --index-url https://download.pytorch.org/whl/cu118
+pip install transformers==4.40.0
+pip install peft==0.9.0
+pip install accelerate==0.27.2
+pip install datasets==2.18.0
+pip install bitsandbytes==0.42.0
+pip install trl==0.8.6
+pip install sentencepiece
+pip install scipy
+
+pip install pymupdf
+
+=======================================
+🔹 1️⃣ Extract text from PDF
+import fitz
+import json
+
+def pdf_to_text(pdf_path):
+    doc = fitz.open(pdf_path)
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    return text
+
+# Example usage
+pdf_text = pdf_to_text("your_input.pdf")
+
+
+🔹 2️⃣ Format text as instruction-response
+# Example: You can split by paragraphs, headings, etc
+instruction = "Summarize the following text:"
+response = pdf_text[:3000]  # truncate/clean large text, or chunk it
+
+data_point = {
+    "text": f"Instruction: {instruction}\nResponse: {response}"
+}
+
+# Save as JSONL
+with open("train.jsonl", "w", encoding="utf-8") as f:
+    f.write(json.dumps(data_point, ensure_ascii=False) + "\n")
+
+
+🔹 1️⃣ Remove unnecessary whitespace
+import re
+
+def clean_whitespace(text):
+    text = re.sub(r'\s+', ' ', text)  # Replace any whitespace (including newlines) with single space
+    return text.strip()
+
+🔹 2️⃣ Remove headers/footers
+def remove_header_footer(text, header_pattern=None, footer_pattern=None):
+    if header_pattern:
+        text = re.sub(header_pattern, '', text)
+    if footer_pattern:
+        text = re.sub(footer_pattern, '', text)
+    return text
+
+# Example:
+# remove_header_footer(pdf_text, header_pattern=r'Report 2023 \| Page \d+', footer_pattern=r'Confidential')
+
+
+🔹 3️⃣ Split into chunks (<= 2048 tokens)
+def chunk_text(text, max_words=1500):
+    words = text.split()
+    for i in range(0, len(words), max_words):
+        yield ' '.join(words[i:i + max_words])
+
+
+🔹 4️⃣ Combine
+pdf_text = pdf_to_text("your.pdf")
+pdf_text = clean_whitespace(pdf_text)
+pdf_text = remove_header_footer(pdf_text, header_pattern=r'Report 2023 \| Page \d+')
+
+chunks = list(chunk_text(pdf_text))
+
+# Format for training
+with open("train.jsonl", "w", encoding="utf-8") as f:
+    for chunk in chunks:
+        record = {
+            "text": f"Instruction: Summarize the following.\nResponse: {chunk}"
+        }
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
