@@ -1,0 +1,160 @@
+pip install pymupdf
+pip install transformers datasets
+pip install torch==2.1.2+cu118 --index-url https://download.pytorch.org/whl/cu118
+pip install transformers==4.40.0
+pip install peft==0.9.0
+pip install datasets==2.18.0
+pip install accelerate==0.27.2
+pip install bitsandbytes==0.42.0
+pip install sentencepiece
+
+
+
+import fitz  # PyMuPDF
+import re
+import json
+from datasets import load_dataset
+
+# Extract text from PDF
+def pdf_to_text(pdf_path):
+    doc = fitz.open(pdf_path)
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    return text
+
+# Clean up whitespace
+def clean_whitespace(text):
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+# Remove headers/footers using regex patterns
+def remove_header_footer(text, header_pattern=None, footer_pattern=None):
+    if header_pattern:
+        text = re.sub(header_pattern, '', text)
+    if footer_pattern:
+        text = re.sub(footer_pattern, '', text)
+    return text
+
+# Split text into chunks
+def chunk_text(text, max_words=1500):
+    words = text.split()
+    for i in range(0, len(words), max_words):
+        yield ' '.join(words[i:i + max_words])
+
+# Process a PDF file
+def process_pdf(pdf_path, out_jsonl, header_pattern=None, footer_pattern=None):
+    raw_text = pdf_to_text(pdf_path)
+    clean_text = clean_whitespace(raw_text)
+    clean_text = remove_header_footer(clean_text, header_pattern, footer_pattern)
+
+    with open(out_jsonl, "w", encoding="utf-8") as f:
+        for chunk in chunk_text(clean_text):
+            record = {
+                "text": f"Instruction: Summarize the following text.\nResponse: {chunk}"
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+# Example usage
+process_pdf(
+    pdf_path="your_input.pdf",
+    out_jsonl="train.jsonl",
+    header_pattern=r"Report 2023 \| Page \d+",
+    footer_pattern=r"Confidential"
+)
+
+# Load dataset for fine-tuning
+dataset = load_dataset("json", data_files={"train": "train.jsonl"})
+
+# Example view
+print(dataset["train"][0])
+
+====
+⚡ 2️⃣ Load model + tokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import LoraConfig, get_peft_model, TaskType
+
+model_path = "./llama-3-8b-instruct"
+
+tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    load_in_8bit=True,  # bitsandbytes quantization
+    device_map="auto"
+)
+
+
+Apply LoRA (PEFT):
+lora_config = LoraConfig(
+    r=64,
+    lora_alpha=16,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    lora_dropout=0.05,
+    bias="none",
+    task_type=TaskType.CAUSAL_LM
+)
+
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()  # Verify only LoRA params are trainable
+
+
+Tokenize your dataset:
+from datasets import load_dataset
+
+dataset = load_dataset("json", data_files={"train": "train.jsonl", "validation": "valid.jsonl"})
+
+def tokenize_function(examples):
+    return tokenizer(
+        examples["text"],
+        truncation=True,
+        max_length=2048,
+        padding=False
+    )
+
+tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+
+
+Set up training arguments:
+from transformers import TrainingArguments
+
+training_args = TrainingArguments(
+    output_dir="./llama3-finetuned",
+    per_device_train_batch_size=2,
+    gradient_accumulation_steps=8,
+    learning_rate=2e-4,
+    num_train_epochs=3,
+    save_steps=500,
+    save_total_limit=2,
+    logging_steps=50,
+    evaluation_strategy="steps",
+    eval_steps=500,
+    bf16=True,         # if hardware supports
+    report_to="none"
+)
+
+
+Train model:
+from transformers import Trainer
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_dataset["train"],
+    eval_dataset=tokenized_dataset["validation"]
+)
+
+trainer.train()
+
+Save model:
+model.save_pretrained("./llama3-finetuned")
+tokenizer.save_pretrained("./llama3-finetuned")
+
+
+Inference / Q&A:
+prompt = "Instruction: Summarize the following text.\nResponse: "
+inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+outputs = model.generate(**inputs, max_new_tokens=200)
+print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+
+
