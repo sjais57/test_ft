@@ -1,0 +1,120 @@
+pip install pypdf2 transformers datasets peft accelerate
+
+
+from PyPDF2 import PdfReader
+import os
+
+pdf_path = "/content/drive/MyDrive/Test_data/IRFC_FY_2023-24_Q3.pdf"
+
+def extract_text_from_pdf(pdf_path):
+    text = ""
+    with open(pdf_path, "rb") as f:
+        reader = PdfReader(f)
+        for page in reader.pages:
+            text += page.extract_text()
+    return text
+
+document_text = extract_text_from_pdf(pdf_path)
+
+
+
+def chunk_document(text, chunk_size=1000):
+    words = text.split()
+    chunks = [' '.join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
+    return chunks
+
+chunks = chunk_document(document_text)
+
+# Create instruction-output pairs (adjust based on your needs)
+data = [{
+    "instruction": "Analyze this financial document section",
+    "input": chunk,
+    "output": f"Analysis of IRFC FY 2023-24 Q3 report section: {chunk[:100]}..." 
+} for chunk in chunks]
+
+
+
+
+from datasets import Dataset
+
+dataset = Dataset.from_list(data)
+dataset = dataset.train_test_split(test_size=0.1)
+
+
+Load the model:
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_name = "metalama/metalama-instruct-8b"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer.pad_token = tokenizer.eos_token  # Set pad token
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype="auto",
+    device_map="auto"
+)
+
+
+
+Step 6: Tokenize Dataset
+
+def tokenize_function(examples):
+    full_prompt = f"### Instruction:\n{examples['instruction']}\n\n### Input:\n{examples['input']}\n\n### Output:\n{examples['output']}"
+    return tokenizer(full_prompt, truncation=True, max_length=1024)
+
+tokenized_dataset = dataset.map(tokenize_function, batched=True)
+
+
+Step 7: Configure LoRA for Efficient Fine-Tuning
+from peft import LoraConfig, get_peft_model
+
+lora_config = LoraConfig(
+    r=8,
+    lora_alpha=16,
+    target_modules=["q_proj", "v_proj"],
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM"
+)
+
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()
+
+
+
+Step 8: Set Up Training
+from transformers import TrainingArguments, Trainer
+
+training_args = TrainingArguments(
+    output_dir="./irfc_fine_tuned",
+    num_train_epochs=3,
+    per_device_train_batch_size=1,
+    gradient_accumulation_steps=4,
+    learning_rate=2e-5,
+    fp16=True,
+    save_total_limit=2,
+    logging_steps=10,
+    evaluation_strategy="steps",
+    eval_steps=50,
+    report_to="none"
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_dataset["train"],
+    eval_dataset=tokenized_dataset["test"],
+    tokenizer=tokenizer
+)
+
+
+Step 9: Run Training
+trainer.train()
+
+
+Step 10: Save the Model
+save_path = "/content/drive/MyDrive/Test_data/IRFC_fine_tuned_model"
+model.save_pretrained(save_path)
+tokenizer.save_pretrained(save_path)
+
+
