@@ -1,0 +1,54 @@
+{
+  "project_id": "platform",
+  "project_name": "Global Platform Configuration",
+  "owner": "AI Platform Team",
+  "environment": "production",
+  "modules": [
+    {
+      "module_type": "api_gateway",
+      "name": "apisix-platform-global",
+      "config": {
+        "global_plugins": [
+          {
+            "name": "serverless-pre-function",
+            "enabled": true,
+            "config": {
+              "phase": "access",
+              "functions": [
+                "return function(conf, ctx)\n  local core = require('apisix.core');\n  local jwt = require('resty.jwt');\n  local auth_header = ngx.var.http_authorization;\n  if not auth_header then\n    core.log.warn('Missing Authorization header');\n    return;\n  end;\n\n  local encoded_jwt = string.match(auth_header, 'Bearer%s+(.+)');\n  if not encoded_jwt then\n    core.log.warn('Authorization header does not contain Bearer token');\n    return;\n  end;\n\n  local jwt_obj = jwt:load_jwt(encoded_jwt);\n  if not (jwt_obj and jwt_obj.valid) then\n    core.log.warn('Invalid JWT');\n    return;\n  end;\n\n  local upstream_token = jwt_obj.payload['ahpc_auth_token'];\n  if upstream_token then\n    ngx.req.set_header('Authorization', 'Bearer ' .. upstream_token);\n    core.log.info('Set new Authorization header from ahpc_auth_token claim');\n  else\n    core.log.warn('ahpc_auth_token claim missing in JWT payload');\n  end;\nend"
+              ]
+            }
+          },
+          {
+            "name": "prometheus",
+            "enabled": true,
+            "config": {
+              "prefer_name": true
+            }
+          },
+          {
+            "name": "request-id",
+            "enabled": true,
+            "config": {
+              "header_name": "X-Request-Id",
+              "include_in_response": true,
+              "algorithm": "uuid"
+            }
+          },
+          {
+            "name": "cors",
+            "enabled": true,
+            "config": {
+              "allow_origins": "*",
+              "allow_methods": "*",
+              "allow_headers": "*",
+              "expose_headers": "*",
+              "max_age": 3600,
+              "allow_credential": true
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
