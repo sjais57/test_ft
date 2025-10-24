@@ -55,6 +55,30 @@ logger = logging.getLogger("control_tower")
 app = FastAPI(title="DSPAI - Control Tower", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Allow cross-origin (optional, production should restrict this)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("Starting DSP AI Control Tower application.")
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("Shutting down DSP AI Control Tower application.")
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Request: {request.method} {request.url}")
+    response = await call_next(request)
+    logger.info(f"Response: {response.status_code} for {request.url}")
+    return response
+
 @app.get("/docs", include_in_schema=False)
 async def swagger_ui_html():
     logger.info("Swagger UI accessed")
