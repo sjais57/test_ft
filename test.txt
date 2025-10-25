@@ -22,4 +22,25 @@ for apisix_module in apisix_modules:
             global_plugins[plugin["name"]] = plugin.get("config", {})
 
 print("=== Extracted Global Plugins ===")
+
+
+global_plugins = {}
+for apisix_module in apisix_modules:
+    config = apisix_module.get("config", {})
+    for plugin in config.get("global_plugins", []):
+        if plugin.get("enabled", True):
+            global_plugins[plugin["name"]] = plugin.get("config", {})
+
+
+
+
+
+if project_id == "platform" and global_plugins:
+    global_rule_id = "platform-global-plugins"
+    print(f"[INFO] Setting global rule {global_rule_id} with plugins: {list(global_plugins.keys())}")
+    result = await self.global_rules_manager.set_global_rule(global_rule_id, global_plugins)
+    results["global_rules"].append(result)
+else:
+    print(f"[INFO] Skipping global plugin setup for project {project_id}")
+
 print(json.dumps(global_plugins, indent=2))
