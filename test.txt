@@ -32,6 +32,7 @@ for apisix_module in apisix_modules:
             global_plugins[plugin["name"]] = plugin.get("config", {})
 
 
+print(f"[DEBUG] Found global plugins for {project_id}: {list(global_plugins.keys())}")
 
 
 
