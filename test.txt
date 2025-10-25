@@ -1,56 +1,25 @@
-model_path = "./llama-3-8b-instruct"
+import json
 
-tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(
-    model_path,
-    load_in_8bit=True,      # Optional: for memory efficiency
-    device_map="auto"
-)
+# path to your manifest
+manifest_path = "platform.json"
+
+with open(manifest_path, "r") as f:
+    manifest = json.load(f)
+
+project_id = manifest.get("project_id", "unknown")
+apisix_modules = manifest.get("modules", [])
+
+print(f"Project ID: {project_id}")
+print(f"Found {len(apisix_modules)} modules")
 
 
-lora_config = LoraConfig(
-    r=64,
-    lora_alpha=16,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-    lora_dropout=0.05,
-    bias="none",
-    task_type="CAUSAL_LM"
-)
-model = get_peft_model(model, lora_config)
-model.print_trainable_parameters()
+global_plugins = {}
 
-dataset = load_dataset("json", data_files={"train": "train.jsonl"})
+for apisix_module in apisix_modules:
+    config = apisix_module.get("config", {})
+    for plugin in config.get("global_plugins", []):
+        if plugin.get("enabled", True):
+            global_plugins[plugin["name"]] = plugin.get("config", {})
 
-def tokenize_function(examples):
-    return tokenizer(
-        examples["text"],
-        truncation=True,
-        max_length=2048,
-        padding=False
-    )
-
-tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=["text"])
-
-training_args = TrainingArguments(
-    output_dir="./llama3-finetuned",
-    per_device_train_batch_size=2,
-    gradient_accumulation_steps=8,
-    learning_rate=2e-4,
-    num_train_epochs=3,
-    save_steps=500,
-    save_total_limit=2,
-    logging_steps=50,
-    evaluation_strategy="steps",
-    eval_steps=500,
-    bf16=True,
-    report_to="none"
-)
-
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=tokenized_dataset["train"],
-    eval_dataset=None  # Or provide valid dataset if you have
-)
-
-trainer.train()
+print("=== Extracted Global Plugins ===")
+print(json.dumps(global_plugins, indent=2))
