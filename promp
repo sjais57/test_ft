@@ -1,0 +1,28 @@
+from prometheus_fastapi_instrumentator import Instrumentator, metrics
+
+def custom_handler_label(info):
+    """
+    Custom metrics processor to show real path instead of static '/{path:path}'.
+    """
+    request = info.request
+    if not request:
+        return info
+
+    # Extract actual path, like '/sas2py/token'
+    path = request.url.path
+    info.labels["handler"] = path  # override default handler label
+
+    # Optionally extract project_id separately if you want
+    parts = path.strip("/").split("/")
+    if parts:
+        info.labels["project_id"] = parts[0]
+
+    return info
+
+instrumentator = Instrumentator(
+    should_group_status_codes=False,
+    should_group_untemplated=False,
+)
+
+instrumentator.add(custom_handler_label)
+instrumentator.instrument(app).expose(app, endpoint="/metrics")
