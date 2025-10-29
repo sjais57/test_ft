@@ -1,47 +1,32 @@
-import json
+# ---------------------------------------------------------
+# Prometheus Instrumentation Setup
+# ---------------------------------------------------------
+from prometheus_fastapi_instrumentator import Instrumentator
 
-# path to your manifest
-manifest_path = "platform.json"
+instrumentator = Instrumentator(
+    should_instrument_requests_inprogress=True,
+    should_group_status_codes=True,
+    should_ignore_untemplated=True,
+)
 
-with open(manifest_path, "r") as f:
-    manifest = json.load(f)
+# Add custom labels for routing mode
+def routing_mode_label(request: Request):
+    """Label route type (apisix/direct/unknown)"""
+    try:
+        front_door = app.state.front_door
+        project_id = front_door.extract_project_id(request)
+        routing_mode = front_door.project_routing.get(project_id)
+        return routing_mode.value if routing_mode else "unknown"
+    except Exception:
+        return "unknown"
 
-project_id = manifest.get("project_id", "unknown")
-apisix_modules = manifest.get("modules", [])
+instrumentator.add(
+    label_names=("routing_mode",),
+    label_default="unknown",
+    metric_namespace="dsp_fd2",
+    metric_subsystem="gateway",
+    label_fn=lambda request, _: {"routing_mode": routing_mode_label(request)}
+)
 
-print(f"Project ID: {project_id}")
-print(f"Found {len(apisix_modules)} modules")
-
-
-global_plugins = {}
-
-for apisix_module in apisix_modules:
-    config = apisix_module.get("config", {})
-    for plugin in config.get("global_plugins", []):
-        if plugin.get("enabled", True):
-            global_plugins[plugin["name"]] = plugin.get("config", {})
-
-print("=== Extracted Global Plugins ===")
-
-
-global_plugins = {}
-for apisix_module in apisix_modules:
-    config = apisix_module.get("config", {})
-    for plugin in config.get("global_plugins", []):
-        if plugin.get("enabled", True):
-            global_plugins[plugin["name"]] = plugin.get("config", {})
-
-
-print(f"[DEBUG] Found global plugins for {project_id}: {list(global_plugins.keys())}")
-
-
-
-if project_id == "platform" and global_plugins:
-    global_rule_id = "platform-global-plugins"
-    print(f"[INFO] Setting global rule {global_rule_id} with plugins: {list(global_plugins.keys())}")
-    result = await self.global_rules_manager.set_global_rule(global_rule_id, global_plugins)
-    results["global_rules"].append(result)
-else:
-    print(f"[INFO] Skipping global plugin setup for project {project_id}")
-
-print(json.dumps(global_plugins, indent=2))
+# Instrument and expose /metrics endpoint
+instrumentator.instrument(app).expose(app)
