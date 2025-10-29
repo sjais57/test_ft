@@ -1,65 +1,49 @@
-# ---------------------------------------------------------
-# Prometheus Instrumentation Setup
-# ---------------------------------------------------------
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_fastapi_instrumentator.metrics import Info
 
-instrumentator = Instrumentator(
-    should_instrument_requests_inprogress=True,
-    should_group_status_codes=True,
-    should_ignore_untemplated=True,
-)
-
-# Add custom labels for routing mode
-def routing_mode_label(request: Request):
-    """Label route type (apisix/direct/unknown)"""
-    try:
-        front_door = app.state.front_door
-        project_id = front_door.extract_project_id(request)
-        routing_mode = front_door.project_routing.get(project_id)
-        return routing_mode.value if routing_mode else "unknown"
-    except Exception:
-        return "unknown"
-
-instrumentator.add(
-    label_names=("routing_mode",),
-    label_default="unknown",
-    metric_namespace="dsp_fd2",
-    metric_subsystem="gateway",
-    label_fn=lambda request, _: {"routing_mode": routing_mode_label(request)}
-)
-
-# Instrument and expose /metrics endpoint
-instrumentator.instrument(app).expose(app)
-
-
-==============
-
-from prometheus_fastapi_instrumentator import Instrumentator, metrics
-
-def custom_handler_label(info):
+def custom_handler_label(info: Info) -> Info:
     """
-    Custom metrics processor to show real path instead of static '/{path:path}'.
+    ✅ Custom metrics processor for DSP-FD2:
+       - Rewrites 'handler' label to the actual runtime path (e.g. /sas2py/token)
+       - Adds 'project_id' label for per-project observability
     """
-    request = info.request
-    if not request:
+    # Defensive: if request or response missing, just return as-is
+    if not info.request or not hasattr(info.request, "url"):
         return info
 
-    # Extract actual path, like '/sas2py/token'
-    path = request.url.path
-    info.labels["handler"] = path  # override default handler label
-
-    # Optionally extract project_id separately if you want
+    # Actual request path
+    path = info.request.url.path or "/unknown"
     parts = path.strip("/").split("/")
-    if parts:
-        info.labels["project_id"] = parts[0]
+    project_id = parts[0] if parts else "unknown"
 
-    return info
+    # Construct new Info safely
+    return Info(
+        name=info.name,
+        documentation=info.documentation,
+        typ=info.typ,
+        labels={
+            **(info.labels or {}),      # keep existing labels (method, status, etc.)
+            "handler": path,            # real runtime path
+            "project_id": project_id,   # extracted project id
+        },
+        value=info.value,
+        buckets=info.buckets,
+        request=info.request,
+        response=info.response,
+        error=info.error,
+        duration=info.duration,
+    )
 
+
+# Initialize Prometheus instrumentation
 instrumentator = Instrumentator(
     should_group_status_codes=False,
+    should_ignore_untemplated=False,
     should_group_untemplated=False,
 )
 
+# Add custom metric processor
 instrumentator.add(custom_handler_label)
-instrumentator.instrument(app).expose(app, endpoint="/metrics")
 
+# Attach to FastAPI app and expose /metrics endpoint
+instrumentator.instrument(app).expose(app, endpoint="/metrics")
