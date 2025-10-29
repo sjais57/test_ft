@@ -3,47 +3,37 @@ from prometheus_fastapi_instrumentator.metrics import Info
 
 def custom_handler_label(info: Info) -> Info:
     """
-    ✅ Custom metrics processor for DSP-FD2:
-       - Rewrites 'handler' label to the actual runtime path (e.g. /sas2py/token)
-       - Adds 'project_id' label for per-project observability
+    ✅ Custom Prometheus label enrichment:
+       - Adds `project_id` from URL
+       - Rewrites `handler` label to actual runtime path
     """
-    # Defensive: if request or response missing, just return as-is
-    if not info.request or not hasattr(info.request, "url"):
+    if not info.request:
         return info
 
-    # Actual request path
-    path = info.request.url.path or "/unknown"
-    parts = path.strip("/").split("/")
-    project_id = parts[0] if parts else "unknown"
+    try:
+        path = info.request.url.path or "/unknown"
+        parts = path.strip("/").split("/")
+        project_id = parts[0] if parts else "unknown"
 
-    # Construct new Info safely
-    return Info(
-        name=info.name,
-        documentation=info.documentation,
-        typ=info.typ,
-        labels={
-            **(info.labels or {}),      # keep existing labels (method, status, etc.)
-            "handler": path,            # real runtime path
-            "project_id": project_id,   # extracted project id
-        },
-        value=info.value,
-        buckets=info.buckets,
-        request=info.request,
-        response=info.response,
-        error=info.error,
-        duration=info.duration,
-    )
+        # Update labels safely
+        info.labels["handler"] = path
+        info.labels["project_id"] = project_id
+
+    except Exception as e:
+        # Never break metric export
+        info.labels["handler"] = "/error"
+        info.labels["project_id"] = "error"
+    return info
 
 
-# Initialize Prometheus instrumentation
+# Initialize instrumentator
 instrumentator = Instrumentator(
     should_group_status_codes=False,
-    should_ignore_untemplated=False,
     should_group_untemplated=False,
 )
 
-# Add custom metric processor
+# Attach custom processor
 instrumentator.add(custom_handler_label)
 
-# Attach to FastAPI app and expose /metrics endpoint
+# Instrument FastAPI and expose Prometheus endpoint
 instrumentator.instrument(app).expose(app, endpoint="/metrics")
