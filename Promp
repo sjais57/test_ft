@@ -1,0 +1,33 @@
+from fastapi import FastAPI, Request
+from prometheus_fastapi_instrumentator import Instrumentator
+
+app = FastAPI()
+
+# ✅ Define your custom label function early (before routes)
+def custom_labels(request: Request):
+    route_template = request.scope.get("route").path  # /admin/configure/{project_id}
+    params = request.path_params                      # {'project_id': 'sas2py'}
+    actual_path = route_template
+    for k, v in params.items():
+        actual_path = actual_path.replace(f"{{{k}}}", str(v))
+    return {
+        "method": request.method,
+        "path": actual_path,
+    }
+
+# Define your routes after that
+@app.get("/admin/configure/{project_id}")
+async def configure_project(project_id: str):
+    return {"project_id": project_id, "status": "configured"}
+
+# ✅ Instrument AFTER routes are registered
+instrumentator = (
+    Instrumentator()
+    .add(
+        metric_name="http_requests_total",
+        labelnames=("method", "path"),
+        labels=custom_labels,   # use your earlier defined function
+    )
+    .instrument(app)
+    .expose(app)
+)
