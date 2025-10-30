@@ -64,3 +64,194 @@
     }
   ]
 }
+
+
+
+_-------
+from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import Counter, Histogram
+import time
+
+# Custom metrics with request name labels
+REQUEST_COUNT = Counter(
+    'http_requests_total',
+    'Total HTTP Requests',
+    ['method', 'endpoint', 'status_code']
+)
+
+REQUEST_DURATION = Histogram(
+    'http_request_duration_seconds',
+    'HTTP Request Duration',
+    ['method', 'endpoint', 'status_code']
+)
+
+def custom_instrumentator():
+    def instrumentation(app: FastAPI):
+        @app.middleware("http")
+        async def capture_request_metrics(request: Request, call_next):
+            start_time = time.time()
+            
+            # Get the route name or use the path as fallback
+            endpoint_name = request.url.path
+            if hasattr(request, 'scope') and 'route' in request.scope:
+                route = request.scope['route']
+                if hasattr(route, 'name') and route.name:
+                    endpoint_name = route.name
+                elif hasattr(route, 'endpoint'):
+                    endpoint_name = route.endpoint.__name__
+            
+            response = await call_next(request)
+            
+            duration = time.time() - start_time
+            
+            # Record metrics
+            REQUEST_COUNT.labels(
+                method=request.method,
+                endpoint=endpoint_name,
+                status_code=response.status_code
+            ).inc()
+            
+            REQUEST_DURATION.labels(
+                method=request.method,
+                endpoint=endpoint_name,
+                status_code=response.status_code
+            ).observe(duration)
+            
+            return response
+        
+        return app
+    
+    return instrumentation
+
+# Usage
+app = FastAPI()
+app = custom_instrumentator()(app)
+
+
+
+
+
+
+from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_fastapi_instrumentator.metrics import Info
+from fastapi import FastAPI, Request, Response
+from typing import Callable
+
+def get_route_name(info: Info) -> str:
+    """Extract route name from request"""
+    request = info.request
+    response = info.response
+    
+    # Try to get route name from FastAPI route
+    if hasattr(request, 'scope') and 'route' in request.scope:
+        route = request.scope['route']
+        if hasattr(route, 'name') and route.name:
+            return route.name
+        elif hasattr(route, 'endpoint'):
+            return route.endpoint.__name__
+    
+    # Fallback to path
+    return request.url.path
+
+def custom_metrics():
+    """Custom metrics that use route names"""
+    from prometheus_client import Counter, Histogram
+    
+    http_requests_total = Counter(
+        "http_requests_total",
+        "Total HTTP requests",
+        ["method", "endpoint", "status_code"]
+    )
+    
+    http_request_duration_seconds = Histogram(
+        "http_request_duration_seconds",
+        "HTTP request duration in seconds",
+        ["method", "endpoint", "status_code"]
+    )
+    
+    def instrumentation(info: Info):
+        route_name = get_route_name(info)
+        
+        http_requests_total.labels(
+            method=info.request.method,
+            endpoint=route_name,
+            status_code=info.response.status_code
+        ).inc()
+        
+        if hasattr(info, 'modified_duration'):
+            http_request_duration_seconds.labels(
+                method=info.request.method,
+                endpoint=route_name,
+                status_code=info.response.status_code
+            ).observe(info.modified_duration)
+    
+    return instrumentation
+
+# Setup instrumentator
+instrumentator = Instrumentator()
+instrumentator.add(custom_metrics())
+
+
+
+
+
+from fastapi import FastAPI, APIRouter
+from prometheus_fastapi_instrumentator import Instrumentator
+
+app = FastAPI()
+
+# Create router with explicit names
+router = APIRouter()
+
+@router.get("/users/{user_id}", name="get_user")
+async def get_user(user_id: int):
+    return {"user_id": user_id}
+
+@router.post("/users", name="create_user")
+async def create_user():
+    return {"message": "user created"}
+
+app.include_router(router)
+
+# Custom instrumentator that respects route names
+def endpoint_name_extractor(info):
+    request = info.request
+    if hasattr(request, 'scope') and 'route' in request.scope:
+        route = request.scope['route']
+        if hasattr(route, 'name') and route.name:
+            return route.name
+    return info.request.url.path
+
+instrumentator = Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    should_respect_env_var=True,
+    should_instrument_requests_inprogress=True,
+    excluded_handlers=[".*admin.*", "/metrics"],
+    inprogress_name="inprogress",
+    inprogress_labels=True,
+)
+
+# Add custom metric with route names
+from prometheus_fastapi_instrumentator.metrics import Info
+from prometheus_client import Counter
+
+def http_requests_total() -> Callable[[Info], None]:
+    METRIC = Counter(
+        "http_requests_total",
+        "Total count of HTTP requests",
+        ["method", "endpoint", "status_code"]
+    )
+
+    def instrumentation(info: Info) -> None:
+        endpoint = endpoint_name_extractor(info)
+        METRIC.labels(
+            method=info.request.method,
+            endpoint=endpoint,
+            status_code=info.response.status_code
+        ).inc()
+
+    return instrumentation
+
+instrumentator.add(http_requests_total())
+instrumentator.instrument(app).expose(app)
