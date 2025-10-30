@@ -1,0 +1,37 @@
+from prometheus_fastapi_instrumentator import Instrumentator
+from fastapi import Request
+
+def custom_labels(request: Request):
+    """
+    Replace placeholders like {project_id} with actual values (e.g. sas2py)
+    """
+    try:
+        route_template = request.scope.get("route").path
+        params = request.path_params
+        actual_path = route_template
+
+        for key, val in params.items():
+            actual_path = actual_path.replace(f"{{{key}}}", str(val))
+
+        actual_path = actual_path.replace('"', '').replace(' ', '_')
+        return {
+            "method": request.method,
+            "path": actual_path,
+        }
+
+    except Exception:
+        return {
+            "method": request.method,
+            "path": request.url.path,
+        }
+
+
+# --- Attach Prometheus Instrumentation ---
+instrumentator = Instrumentator()
+
+@instrumentator.label
+def add_custom_labels(request: Request, response):
+    # Integrates seamlessly with latest Instrumentator
+    return custom_labels(request)
+
+instrumentator.instrument(app).expose(app, endpoint="/metrics")
