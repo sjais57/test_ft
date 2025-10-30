@@ -1,0 +1,90 @@
+from fastapi import FastAPI, Request
+from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_fastapi_instrumentator.metrics import Info
+from typing import Callable
+
+app = FastAPI()
+
+def endpoint_name_extractor(info: Info) -> str:
+    """Extract endpoint name from request"""
+    request = info.request
+    
+    # Method 1: Try to get from route name
+    if hasattr(request, 'route') and hasattr(request.route, 'name') and request.route.name:
+        return request.route.name
+    
+    # Method 2: Try to get from scope
+    if hasattr(request, 'scope') and request.scope.get('route'):
+        route = request.scope['route']
+        if hasattr(route, 'name') and route.name:
+            return route.name
+    
+    # Method 3: Fallback to path
+    return request.url.path
+
+def custom_http_requests_total() -> Callable[[Info], None]:
+    from prometheus_client import Counter
+    
+    METRIC = Counter(
+        "http_requests_total",
+        "Total HTTP requests with endpoint names",
+        ["method", "endpoint", "status_code"]
+    )
+
+    def instrumentation(info: Info) -> None:
+        endpoint = endpoint_name_extractor(info)
+        METRIC.labels(
+            method=info.request.method,
+            endpoint=endpoint,
+            status_code=info.response.status_code
+        ).inc()
+
+    return instrumentation
+
+# Setup instrumentator
+instrumentator = Instrumentator()
+instrumentator.add(custom_http_requests_total())
+instrumentator.instrument(app).expose(app)
+
+# Your routes
+@app.get("/products/{product_id}", name="get_product")
+async def get_product(product_id: int):
+    return {"product_id": product_id}
+
+@app.post("/products", name="create_product")
+async def create_product():
+    return {"message": "product created"}
+
+
+
+
+from fastapi import FastAPI, Request
+from prometheus_fastapi_instrumentator import Instrumentator
+
+app = FastAPI()
+
+@app.get("/id/{id}")
+async def get_item(id: str):
+    return {"id": id, "msg": "Success"}
+
+# Custom label function: replaces {id} with actual id string
+def custom_labels(request: Request):
+    # Example: /id/sas2py → id/sas2py
+    path = request.url.path
+    method = request.method
+
+    # optionally sanitize (Prometheus label values must not have spaces or quotes)
+    safe_path = path.replace(" ", "_").replace('"', "")
+
+    return {
+        "method": method,
+        "path": safe_path,
+    }
+
+Instrumentator(
+    should_instrument_fn=lambda _: True,
+).add(
+    metric_name="http_requests_total",
+    labelnames=("method", "path"),
+    labels=custom_labels
+).instrument(app).expose(app)
