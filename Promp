@@ -1,0 +1,38 @@
+from prometheus_fastapi_instrumentator import Instrumentator
+from fastapi import Request
+
+def custom_labels(request: Request):
+    """
+    Replace route template placeholders like {project_id} with real values (e.g. sas2py)
+    """
+    try:
+        route_template = request.scope.get("route").path
+        params = request.path_params
+        actual_path = route_template
+        for key, val in params.items():
+            actual_path = actual_path.replace(f"{{{key}}}", str(val))
+        actual_path = actual_path.replace('"', '').replace(' ', '_')
+        return {"method": request.method, "path": actual_path}
+    except Exception:
+        return {"method": request.method, "path": request.url.path}
+
+
+# ✅ Initialize Prometheus Instrumentator
+instrumentator = Instrumentator(
+    should_instrument_fn=lambda _: True,  # instrument all routes
+    excluded_handlers=["/metrics"],       # skip metrics endpoint itself
+)
+
+# Add standard HTTP metrics with our custom label builder
+instrumentator.add(
+    metrics_request_duration_seconds=True,
+    metrics_request_size_bytes=True,
+    metrics_response_size_bytes=True,
+)
+
+# Expose /metrics endpoint and apply label customization via `group_paths`
+instrumentator.instrument(
+    app,
+    should_group_by_path=False,  # prevent collapsing /admin/configure/sas2py -> /admin/configure/{project_id}
+    group_paths=False,
+).expose(app, endpoint="/metrics")
