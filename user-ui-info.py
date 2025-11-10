@@ -47,6 +47,14 @@ async def user_ui_info(request: UserPoliciesRequest):
                 else:
                     project_details[key] = ""
 
+            # Extract actions/roles from policy
+            actions = []
+            actions_pattern = r'actions\s*:\s*\[([^\]]+)\]'
+            actions_match = re.search(actions_pattern, policy_content, re.DOTALL)
+            if actions_match:
+                actions_str = actions_match.group(1)
+                actions = [action.strip().strip('"') for action in actions_str.split(',') if action.strip()]
+
             # Get deployment models for this project from JSON
             deploy_models = {}
             jl_models_set = set()
@@ -83,7 +91,7 @@ async def user_ui_info(request: UserPoliciesRequest):
             jl_models = list(jl_models_set)
             roles = list(set(actions))
 
-            # Lane access logic with env-level GPU (unchanged)
+            # Lane access logic with env-level GPU
             lane_map = {
                 "train_pvt": "Training (Non-Public Data)",
                 "train_pub": "Training (Public Data)",
@@ -94,6 +102,7 @@ async def user_ui_info(request: UserPoliciesRequest):
             lane_access = []
             for action_key, label in lane_map.items():
                 gpu_dict = {}
+                account = ""  # Initialize account variable
                 for env in ["dev", "prod"]:
                     try:
                         aihpc_config = extract_aihpc_config(policy_content, env, label)
